@@ -12,7 +12,7 @@ struct AVFrame;
 struct AVPacket;
 struct SwsContext;
 
-namespace bachuan {
+namespace baichuan {
 
 // Save a single frame as JPEG image
 class ImageWriter {
@@ -63,4 +63,4 @@ private:
     bool encode_frame(AVFrame* frame);
 };
 
-} // namespace bachuan
+} // namespace baichuan

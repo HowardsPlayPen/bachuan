@@ -13,7 +13,7 @@ A C++ application to connect to Reolink cameras using the proprietary Baichuan p
 
 ### 1.1 Directory Structure
 ```
-bachuan/
+baichuan/
 ├── CMakeLists.txt
 ├── src/
 │   ├── main.cpp                 # Application entry point

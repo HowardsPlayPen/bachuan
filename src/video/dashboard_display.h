@@ -12,7 +12,7 @@
 #include <gtk/gtk.h>
 #include <cairo/cairo.h>
 
-namespace bachuan {
+namespace baichuan {
 
 // Callback for quit event
 using QuitCallback = std::function<void()>;
@@ -96,4 +96,4 @@ private:
     static void draw_pane(CameraPane* pane, cairo_t* cr, int width, int height);
 };
 
-} // namespace bachuan
+} // namespace baichuan

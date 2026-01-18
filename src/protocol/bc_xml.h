@@ -5,7 +5,7 @@
 #include <optional>
 #include <vector>
 
-namespace bachuan {
+namespace baichuan {
 
 // Default XML version used in messages
 constexpr const char* XML_VERSION = "1.1";
@@ -106,4 +106,4 @@ public:
     static std::optional<std::string> extract_tag(const std::string& xml, const std::string& tag);
 };
 
-} // namespace bachuan
+} // namespace baichuan

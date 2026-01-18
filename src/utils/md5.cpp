@@ -5,7 +5,7 @@
 #include <sstream>
 #include <stdexcept>
 
-namespace bachuan {
+namespace baichuan {
 
 MD5::Digest MD5::hash(const std::string& data) {
     return hash(reinterpret_cast<const uint8_t*>(data.data()), data.size());
@@ -73,4 +73,4 @@ std::string MD5::hash_hex(const uint8_t* data, size_t len) {
     return to_hex(hash(data, len));
 }
 
-} // namespace bachuan
+} // namespace baichuan

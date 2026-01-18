@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <array>
 
-namespace bachuan {
+namespace baichuan {
 
 class MD5 {
 public:
@@ -30,4 +30,4 @@ public:
     static std::string hash_hex(const uint8_t* data, size_t len);
 };
 
-} // namespace bachuan
+} // namespace baichuan

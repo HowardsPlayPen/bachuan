@@ -5,7 +5,7 @@
 #include <cairo/cairo.h>
 #include <cstring>
 
-namespace bachuan {
+namespace baichuan {
 
 VideoDisplay::VideoDisplay() = default;
 
@@ -314,4 +314,4 @@ void VideoDisplay::update_surface() {
     cairo_surface_mark_dirty(surface_);
 }
 
-} // namespace bachuan
+} // namespace baichuan

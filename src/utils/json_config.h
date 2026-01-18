@@ -7,7 +7,7 @@
 #include <sstream>
 #include <stdexcept>
 
-namespace bachuan {
+namespace baichuan {
 
 // Camera configuration from JSON
 struct CameraConfig {
@@ -181,4 +181,4 @@ private:
     }
 };
 
-} // namespace bachuan
+} // namespace baichuan

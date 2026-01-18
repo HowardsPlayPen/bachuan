@@ -2,7 +2,7 @@
 #include "utils/md5.h"
 #include "utils/logger.h"
 
-namespace bachuan {
+namespace baichuan {
 
 Authenticator::Authenticator(Connection& conn) : conn_(conn) {}
 
@@ -285,4 +285,4 @@ std::optional<DeviceInfoXml> Authenticator::receive_login_response() {
     return DeviceInfoXml{};
 }
 
-} // namespace bachuan
+} // namespace baichuan

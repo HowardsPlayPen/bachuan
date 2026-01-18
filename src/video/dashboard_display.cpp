@@ -4,7 +4,7 @@
 #include <cstring>
 #include <algorithm>
 
-namespace bachuan {
+namespace baichuan {
 
 DashboardDisplay::DashboardDisplay() = default;
 
@@ -316,4 +316,4 @@ void DashboardDisplay::on_quit_clicked(GtkWidget* widget, gpointer user_data) {
     gtk_main_quit();
 }
 
-} // namespace bachuan
+} // namespace baichuan

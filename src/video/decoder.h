@@ -11,7 +11,7 @@ struct AVFrame;
 struct AVPacket;
 struct SwsContext;
 
-namespace bachuan {
+namespace baichuan {
 
 // Decoded frame with RGB data
 struct DecodedFrame {
@@ -84,4 +84,4 @@ private:
     bool convert_to_rgb(DecodedFrame& output);
 };
 
-} // namespace bachuan
+} // namespace baichuan

@@ -5,7 +5,7 @@
 #include <optional>
 #include <string>
 
-namespace bachuan {
+namespace baichuan {
 
 // Magic header values
 constexpr uint32_t MAGIC_HEADER = 0x0abcdef0;
@@ -127,4 +127,4 @@ struct BcMessage {
     std::vector<uint8_t> serialize() const;
 };
 
-} // namespace bachuan
+} // namespace baichuan

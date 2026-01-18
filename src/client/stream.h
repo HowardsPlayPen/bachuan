@@ -10,7 +10,7 @@
 #include <condition_variable>
 #include <set>
 
-namespace bachuan {
+namespace baichuan {
 
 // Stream configuration
 struct StreamConfig {
@@ -91,4 +91,4 @@ private:
     void process_media_data(const std::vector<uint8_t>& data);
 };
 
-} // namespace bachuan
+} // namespace baichuan

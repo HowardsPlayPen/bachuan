@@ -7,7 +7,7 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
-namespace bachuan {
+namespace baichuan {
 
 VideoDecoder::VideoDecoder() = default;
 
@@ -219,4 +219,4 @@ bool VideoDecoder::convert_to_rgb(DecodedFrame& output) {
     return true;
 }
 
-} // namespace bachuan
+} // namespace baichuan

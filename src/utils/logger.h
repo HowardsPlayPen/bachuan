@@ -7,7 +7,7 @@
 #include <mutex>
 #include <sstream>
 
-namespace bachuan {
+namespace baichuan {
 
 enum class LogLevel {
     Debug,
@@ -111,9 +111,9 @@ private:
     std::mutex mutex_;
 };
 
-#define LOG_DEBUG(...) bachuan::Logger::instance().debug(__VA_ARGS__)
-#define LOG_INFO(...)  bachuan::Logger::instance().info(__VA_ARGS__)
-#define LOG_WARN(...)  bachuan::Logger::instance().warning(__VA_ARGS__)
-#define LOG_ERROR(...) bachuan::Logger::instance().error(__VA_ARGS__)
+#define LOG_DEBUG(...) baichuan::Logger::instance().debug(__VA_ARGS__)
+#define LOG_INFO(...)  baichuan::Logger::instance().info(__VA_ARGS__)
+#define LOG_WARN(...)  baichuan::Logger::instance().warning(__VA_ARGS__)
+#define LOG_ERROR(...) baichuan::Logger::instance().error(__VA_ARGS__)
 
-} // namespace bachuan
+} // namespace baichuan

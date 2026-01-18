@@ -6,7 +6,7 @@
 #include <optional>
 #include <string>
 
-namespace bachuan {
+namespace baichuan {
 
 // BcMedia magic headers
 constexpr uint32_t MAGIC_BCMEDIA_INFO_V1 = 0x31303031;    // "1001"
@@ -130,4 +130,4 @@ private:
     static std::optional<std::pair<BcMediaAdpcm, size_t>> parse_adpcm(const uint8_t* data, size_t len);
 };
 
-} // namespace bachuan
+} // namespace baichuan

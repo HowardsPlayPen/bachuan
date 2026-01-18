@@ -2,7 +2,7 @@
 #include "protocol/bc_xml.h"
 #include "utils/logger.h"
 
-namespace bachuan {
+namespace baichuan {
 
 VideoStream::VideoStream(Connection& conn) : conn_(conn) {}
 
@@ -259,4 +259,4 @@ void VideoStream::process_media_data(const std::vector<uint8_t>& data) {
     }
 }
 
-} // namespace bachuan
+} // namespace baichuan

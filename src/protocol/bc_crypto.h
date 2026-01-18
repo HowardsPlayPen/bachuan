@@ -6,7 +6,7 @@
 #include <memory>
 #include <string>
 
-namespace bachuan {
+namespace baichuan {
 
 // Fixed XOR key for BCEncrypt
 constexpr uint8_t BC_ENCRYPT_KEY[8] = {0x1F, 0x2D, 0x3C, 0x4B, 0x5A, 0x69, 0x78, 0xFF};
@@ -76,4 +76,4 @@ private:
     std::vector<uint8_t> aes_decrypt(const uint8_t* data, size_t len);
 };
 
-} // namespace bachuan
+} // namespace baichuan

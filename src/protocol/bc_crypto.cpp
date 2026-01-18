@@ -9,7 +9,7 @@
 #include <sstream>
 #include <iomanip>
 
-namespace bachuan {
+namespace baichuan {
 
 struct BcCrypto::AesContext {
     std::array<uint8_t, 16> key;
@@ -249,4 +249,4 @@ std::vector<uint8_t> BcCrypto::aes_decrypt(const uint8_t* data, size_t len) {
     return result;
 }
 
-} // namespace bachuan
+} // namespace baichuan

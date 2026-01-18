@@ -11,7 +11,7 @@
 #include <cerrno>
 #include <cstring>
 
-namespace bachuan {
+namespace baichuan {
 
 Connection::Connection() {
     recv_buffer_.reserve(65536);
@@ -403,4 +403,4 @@ bool Connection::wait_for_data(int timeout_ms) {
     return true;
 }
 
-} // namespace bachuan
+} // namespace baichuan

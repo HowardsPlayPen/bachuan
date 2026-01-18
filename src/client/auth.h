@@ -5,7 +5,7 @@
 #include <string>
 #include <optional>
 
-namespace bachuan {
+namespace baichuan {
 
 // Requested encryption level for login
 enum class MaxEncryption {
@@ -56,4 +56,4 @@ private:
     std::optional<DeviceInfoXml> receive_login_response();
 };
 
-} // namespace bachuan
+} // namespace baichuan

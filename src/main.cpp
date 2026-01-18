@@ -15,7 +15,7 @@
 #include <chrono>
 #include <thread>
 
-using namespace bachuan;
+using namespace baichuan;
 
 // Global flag for signal handling
 static std::atomic<bool> g_quit{false};

@@ -12,7 +12,7 @@
 #include <queue>
 #include <set>
 
-namespace bachuan {
+namespace baichuan {
 
 class Connection {
 public:
@@ -88,4 +88,4 @@ private:
     bool wait_for_data(int timeout_ms);
 };
 
-} // namespace bachuan
+} // namespace baichuan

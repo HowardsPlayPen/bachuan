@@ -2,7 +2,7 @@
 #include "utils/logger.h"
 #include <cstring>
 
-namespace bachuan {
+namespace baichuan {
 
 namespace {
 
@@ -180,4 +180,4 @@ std::vector<uint8_t> BcMessage::serialize() const {
     return buf;
 }
 
-} // namespace bachuan
+} // namespace baichuan

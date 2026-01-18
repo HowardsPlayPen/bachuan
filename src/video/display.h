@@ -10,7 +10,7 @@
 #include <gtk/gtk.h>
 #include <cairo/cairo.h>
 
-namespace bachuan {
+namespace baichuan {
 
 // Callback for window close event
 using CloseCallback = std::function<void()>;
@@ -81,4 +81,4 @@ private:
     void update_surface();
 };
 
-} // namespace bachuan
+} // namespace baichuan

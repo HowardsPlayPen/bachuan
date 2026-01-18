@@ -9,7 +9,7 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
-namespace bachuan {
+namespace baichuan {
 
 // ImageWriter implementation
 
@@ -404,4 +404,4 @@ bool VideoWriter::encode_frame(AVFrame* frame) {
     return true;
 }
 
-} // namespace bachuan
+} // namespace baichuan

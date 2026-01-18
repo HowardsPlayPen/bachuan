@@ -6,12 +6,12 @@ A C++ client for viewing Reolink camera streams using the Baichuan (BC) protocol
 
 This project builds two applications:
 
-### bachuan
+### baichuan
 
 Single camera viewer with GTK display. Connect to one Reolink camera and view its live video stream.
 
 ```bash
-./bachuan -h <camera_ip> -u <username> -P <password> [options]
+./baichuan -h <camera_ip> -u <username> -P <password> [options]
 ```
 
 Options:

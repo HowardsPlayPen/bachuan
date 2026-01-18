@@ -2,7 +2,7 @@
 #include "utils/logger.h"
 #include <cstring>
 
-namespace bachuan {
+namespace baichuan {
 
 namespace {
 
@@ -306,4 +306,4 @@ std::optional<VideoCodec> BcMediaParser::get_video_codec(const BcMediaFrame& fra
     return std::nullopt;
 }
 
-} // namespace bachuan
+} // namespace baichuan

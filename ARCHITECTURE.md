@@ -241,7 +241,7 @@ Offset  Size  Field
 ## Key Files
 
 ```
-bachuan/
+baichuan/
 ├── src/
 │   ├── main.cpp              # Entry point, CLI parsing
 │   ├── client/
@@ -305,7 +305,7 @@ make -j4
 ## Usage
 
 ```bash
-./bachuan -h <camera_ip> -u <username> -P <password> [-e bc|aes] [-d]
+./baichuan -h <camera_ip> -u <username> -P <password> [-e bc|aes] [-d]
 ```
 
 Options:

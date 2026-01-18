@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(bachuan VERSION 1.0.0 LANGUAGES CXX)
+project(baichuan VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -43,7 +43,7 @@ set(UTILS_SOURCES
     src/utils/md5.cpp
 )
 
-# Common sources (shared between bachuan and dashboard)
+# Common sources (shared between baichuan and dashboard)
 set(COMMON_SOURCES
     ${PROTOCOL_SOURCES}
     ${CLIENT_SOURCES}
@@ -65,9 +65,9 @@ set(DASHBOARD_SOURCES
 )
 
 # Main executable
-add_executable(bachuan ${BACHUAN_SOURCES})
+add_executable(baichuan ${BACHUAN_SOURCES})
 
-target_include_directories(bachuan PRIVATE
+target_include_directories(baichuan PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${OPENSSL_INCLUDE_DIR}
     ${LIBXML2_INCLUDE_DIRS}
@@ -75,7 +75,7 @@ target_include_directories(bachuan PRIVATE
     ${FFMPEG_INCLUDE_DIRS}
 )
 
-target_link_libraries(bachuan PRIVATE
+target_link_libraries(baichuan PRIVATE
     ${OPENSSL_LIBRARIES}
     ${LIBXML2_LIBRARIES}
     ${GTK3_LIBRARIES}
@@ -83,7 +83,7 @@ target_link_libraries(bachuan PRIVATE
     pthread
 )
 
-target_compile_options(bachuan PRIVATE
+target_compile_options(baichuan PRIVATE
     ${GTK3_CFLAGS_OTHER}
     -Wall
     -Wextra
@@ -117,4 +117,4 @@ target_compile_options(dashboard PRIVATE
 )
 
 # Install targets
-install(TARGETS bachuan dashboard RUNTIME DESTINATION bin)
+install(TARGETS baichuan dashboard RUNTIME DESTINATION bin)

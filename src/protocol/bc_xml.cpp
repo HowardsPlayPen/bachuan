@@ -8,7 +8,7 @@
 #include <cstring>
 #include <memory>
 
-namespace bachuan {
+namespace baichuan {
 
 namespace {
 
@@ -312,4 +312,4 @@ std::optional<std::string> BcXmlBuilder::extract_tag(const std::string& xml, con
     return xml.substr(content_start, end - content_start);
 }
 
-} // namespace bachuan
+} // namespace baichuan

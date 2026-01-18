@@ -15,7 +15,7 @@
 #include <csignal>
 #include <getopt.h>
 
-using namespace bachuan;
+using namespace baichuan;
 
 // Global flag for signal handling
 static std::atomic<bool> g_quit{false};
