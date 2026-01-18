@@ -50,6 +50,8 @@ public:
 
 private:
     GtkWidget* window_ = nullptr;
+    GtkWidget* main_box_ = nullptr;      // Horizontal box for menu + video
+    GtkWidget* menu_box_ = nullptr;      // Left menu panel
     GtkWidget* drawing_area_ = nullptr;
     cairo_surface_t* surface_ = nullptr;
 
@@ -74,6 +76,7 @@ private:
     static gboolean on_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data);
     static gboolean on_delete_event(GtkWidget* widget, GdkEvent* event, gpointer user_data);
     static gboolean on_idle_update(gpointer user_data);
+    static void on_quit_clicked(GtkWidget* widget, gpointer user_data);
 
     void update_surface();
 };

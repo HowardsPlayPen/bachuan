@@ -32,10 +32,34 @@ bool VideoDisplay::create(const std::string& title, int width, int height) {
     }
 
     gtk_window_set_title(GTK_WINDOW(window_), title.c_str());
-    gtk_window_set_default_size(GTK_WINDOW(window_), width, height);
+    gtk_window_set_default_size(GTK_WINDOW(window_), width + 100, height);  // Extra width for menu
     gtk_window_set_resizable(GTK_WINDOW(window_), TRUE);
 
-    // Create drawing area
+    // Create horizontal box for menu + video area
+    main_box_ = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_container_add(GTK_CONTAINER(window_), main_box_);
+
+    // Create left menu panel
+    menu_box_ = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+    gtk_widget_set_size_request(menu_box_, 100, -1);
+    gtk_box_pack_start(GTK_BOX(main_box_), menu_box_, FALSE, FALSE, 0);
+
+    // Style the menu box with a dark background
+    GtkCssProvider* css_provider = gtk_css_provider_new();
+    gtk_css_provider_load_from_data(css_provider,
+        "box { background-color: #2d2d2d; padding: 10px; }"
+        "button { margin: 5px; }",
+        -1, nullptr);
+    GtkStyleContext* context = gtk_widget_get_style_context(menu_box_);
+    gtk_style_context_add_provider(context, GTK_STYLE_PROVIDER(css_provider),
+                                   GTK_STYLE_PROVIDER_PRIORITY_USER);
+
+    // Add Quit button
+    GtkWidget* quit_button = gtk_button_new_with_label("Quit");
+    gtk_box_pack_end(GTK_BOX(menu_box_), quit_button, FALSE, FALSE, 0);
+    g_signal_connect(quit_button, "clicked", G_CALLBACK(on_quit_clicked), this);
+
+    // Create drawing area for video
     drawing_area_ = gtk_drawing_area_new();
     if (!drawing_area_) {
         LOG_ERROR("Failed to create drawing area");
@@ -45,7 +69,9 @@ bool VideoDisplay::create(const std::string& title, int width, int height) {
     }
 
     gtk_widget_set_size_request(drawing_area_, width, height);
-    gtk_container_add(GTK_CONTAINER(window_), drawing_area_);
+    gtk_widget_set_hexpand(drawing_area_, TRUE);
+    gtk_widget_set_vexpand(drawing_area_, TRUE);
+    gtk_box_pack_start(GTK_BOX(main_box_), drawing_area_, TRUE, TRUE, 0);
 
     // Connect signals
     g_signal_connect(drawing_area_, "draw", G_CALLBACK(on_draw), this);
@@ -203,6 +229,21 @@ gboolean VideoDisplay::on_delete_event(GtkWidget* widget, GdkEvent* event, gpoin
 
     gtk_main_quit();
     return FALSE;
+}
+
+void VideoDisplay::on_quit_clicked(GtkWidget* widget, gpointer user_data) {
+    (void)widget;
+
+    VideoDisplay* self = static_cast<VideoDisplay*>(user_data);
+
+    LOG_DEBUG("Quit button clicked");
+    self->quit_requested_.store(true);
+
+    if (self->close_callback_) {
+        self->close_callback_();
+    }
+
+    gtk_main_quit();
 }
 
 gboolean VideoDisplay::on_idle_update(gpointer user_data) {
