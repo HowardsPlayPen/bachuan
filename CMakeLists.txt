@@ -33,21 +33,39 @@ set(VIDEO_SOURCES
     src/video/writer.cpp
 )
 
+set(DASHBOARD_VIDEO_SOURCES
+    src/video/decoder.cpp
+    src/video/dashboard_display.cpp
+)
+
 set(UTILS_SOURCES
     src/utils/logger.cpp
     src/utils/md5.cpp
 )
 
-set(ALL_SOURCES
-    src/main.cpp
+# Common sources (shared between bachuan and dashboard)
+set(COMMON_SOURCES
     ${PROTOCOL_SOURCES}
     ${CLIENT_SOURCES}
-    ${VIDEO_SOURCES}
     ${UTILS_SOURCES}
 )
 
+# Bachuan (single camera viewer)
+set(BACHUAN_SOURCES
+    src/main.cpp
+    ${COMMON_SOURCES}
+    ${VIDEO_SOURCES}
+)
+
+# Dashboard (multi-camera viewer)
+set(DASHBOARD_SOURCES
+    src/dashboard_main.cpp
+    ${COMMON_SOURCES}
+    ${DASHBOARD_VIDEO_SOURCES}
+)
+
 # Main executable
-add_executable(bachuan ${ALL_SOURCES})
+add_executable(bachuan ${BACHUAN_SOURCES})
 
 target_include_directories(bachuan PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -72,5 +90,31 @@ target_compile_options(bachuan PRIVATE
     -Wpedantic
 )
 
-# Install target
-install(TARGETS bachuan RUNTIME DESTINATION bin)
+# Dashboard executable
+add_executable(dashboard ${DASHBOARD_SOURCES})
+
+target_include_directories(dashboard PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${OPENSSL_INCLUDE_DIR}
+    ${LIBXML2_INCLUDE_DIRS}
+    ${GTK3_INCLUDE_DIRS}
+    ${FFMPEG_INCLUDE_DIRS}
+)
+
+target_link_libraries(dashboard PRIVATE
+    ${OPENSSL_LIBRARIES}
+    ${LIBXML2_LIBRARIES}
+    ${GTK3_LIBRARIES}
+    ${FFMPEG_LIBRARIES}
+    pthread
+)
+
+target_compile_options(dashboard PRIVATE
+    ${GTK3_CFLAGS_OTHER}
+    -Wall
+    -Wextra
+    -Wpedantic
+)
+
+# Install targets
+install(TARGETS bachuan dashboard RUNTIME DESTINATION bin)
