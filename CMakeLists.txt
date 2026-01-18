@@ -30,6 +30,7 @@ set(CLIENT_SOURCES
 set(VIDEO_SOURCES
     src/video/decoder.cpp
     src/video/display.cpp
+    src/video/writer.cpp
 )
 
 set(UTILS_SOURCES
