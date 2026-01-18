@@ -3,6 +3,7 @@
 #include "client/stream.h"
 #include "video/decoder.h"
 #include "video/dashboard_display.h"
+#include "rtsp/rtsp_source.h"
 #include "utils/logger.h"
 #include "utils/json_config.h"
 
@@ -34,12 +35,13 @@ void print_usage(const char* program) {
               << "  -d, --debug           Enable debug logging\n"
               << "  --help                Show this help message\n"
               << "\n"
-              << "Configuration file format:\n"
+              << "Configuration file format (Baichuan camera):\n"
               << "  {\n"
               << "    \"columns\": 2,\n"
               << "    \"cameras\": [\n"
               << "      {\n"
               << "        \"name\": \"Front Door\",\n"
+              << "        \"type\": \"baichuan\",\n"
               << "        \"host\": \"192.168.1.100\",\n"
               << "        \"port\": 9000,\n"
               << "        \"username\": \"admin\",\n"
@@ -47,8 +49,19 @@ void print_usage(const char* program) {
               << "        \"encryption\": \"aes\",\n"
               << "        \"stream\": \"main\",\n"
               << "        \"channel\": 0\n"
-              << "      },\n"
-              << "      ...\n"
+              << "      }\n"
+              << "    ]\n"
+              << "  }\n"
+              << "\n"
+              << "Configuration file format (RTSP camera):\n"
+              << "  {\n"
+              << "    \"cameras\": [\n"
+              << "      {\n"
+              << "        \"name\": \"Back Yard\",\n"
+              << "        \"type\": \"rtsp\",\n"
+              << "        \"url\": \"rtsp://admin:password@192.168.1.101:554/stream\",\n"
+              << "        \"transport\": \"tcp\"\n"
+              << "      }\n"
               << "    ]\n"
               << "  }\n"
               << "\n"
@@ -60,8 +73,12 @@ void print_usage(const char* program) {
 struct CameraContext {
     size_t index;
     CameraConfig config;
+    // Baichuan-specific
     std::unique_ptr<Connection> connection;
     std::unique_ptr<VideoStream> stream;
+    // RTSP-specific
+    std::unique_ptr<RtspSource> rtsp_source;
+    // Shared
     std::unique_ptr<VideoDecoder> decoder;
     std::thread worker_thread;
     std::atomic<bool> running{false};
@@ -73,7 +90,78 @@ MaxEncryption string_to_encryption(const std::string& enc) {
     return MaxEncryption::Aes;
 }
 
-void camera_worker(CameraContext* ctx, DashboardDisplay* display) {
+// RTSP camera worker
+void rtsp_camera_worker(CameraContext* ctx, DashboardDisplay* display) {
+    LOG_INFO("Camera {} (RTSP: {}) starting...", ctx->index, ctx->config.name);
+
+    display->set_status(ctx->index, "Connecting RTSP...");
+
+    // Create RTSP source
+    ctx->rtsp_source = std::make_unique<RtspSource>();
+    ctx->rtsp_source->set_url(ctx->config.url);
+    ctx->rtsp_source->set_transport(ctx->config.transport);
+
+    if (!ctx->rtsp_source->connect()) {
+        LOG_ERROR("Camera {}: RTSP connection failed", ctx->index);
+        display->set_status(ctx->index, "RTSP failed");
+        return;
+    }
+
+    display->set_status(ctx->index, "Starting stream...");
+
+    // Create decoder
+    ctx->decoder = std::make_unique<VideoDecoder>();
+
+    // Handle stream info
+    ctx->rtsp_source->on_info([ctx](int width, int height, int fps) {
+        LOG_INFO("Camera {} (RTSP): Stream {}x{} @ {} fps", ctx->index, width, height, fps);
+    });
+
+    // Handle video frames
+    ctx->rtsp_source->on_frame([ctx, display](const uint8_t* data, size_t len, VideoCodec codec) {
+        if (!ctx->running.load()) return;
+
+        // Initialize decoder on first frame
+        if (!ctx->decoder->is_initialized()) {
+            if (!ctx->decoder->init(codec)) {
+                LOG_ERROR("Camera {}: Failed to initialize decoder", ctx->index);
+                return;
+            }
+        }
+
+        // Decode and display
+        ctx->decoder->decode(data, len, [ctx, display](const DecodedFrame& decoded) {
+            display->update_frame(ctx->index, decoded);
+        });
+    });
+
+    // Handle errors
+    ctx->rtsp_source->on_error([ctx, display](const std::string& error) {
+        LOG_ERROR("Camera {} (RTSP): Error: {}", ctx->index, error);
+        display->set_status(ctx->index, "Error: " + error);
+    });
+
+    // Start streaming
+    ctx->running.store(true);
+    if (!ctx->rtsp_source->start()) {
+        LOG_ERROR("Camera {}: Failed to start RTSP stream", ctx->index);
+        display->set_status(ctx->index, "Stream failed");
+        ctx->running.store(false);
+        return;
+    }
+
+    // Wait until quit requested
+    while (ctx->running.load() && !g_quit.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    // Cleanup
+    ctx->rtsp_source->stop();
+    LOG_INFO("Camera {} (RTSP): Stopped", ctx->index);
+}
+
+// Baichuan camera worker
+void baichuan_camera_worker(CameraContext* ctx, DashboardDisplay* display) {
     LOG_INFO("Camera {} ({}) starting...", ctx->index, ctx->config.host);
 
     display->set_status(ctx->index, "Connecting...");
@@ -185,6 +273,15 @@ void camera_worker(CameraContext* ctx, DashboardDisplay* display) {
     LOG_INFO("Camera {}: Stopped", ctx->index);
 }
 
+// Dispatch to appropriate worker based on camera type
+void camera_worker(CameraContext* ctx, DashboardDisplay* display) {
+    if (ctx->config.type == CameraType::Rtsp) {
+        rtsp_camera_worker(ctx, display);
+    } else {
+        baichuan_camera_worker(ctx, display);
+    }
+}
+
 int main(int argc, char* argv[]) {
     std::string config_file;
     bool debug = false;
@@ -224,7 +321,7 @@ int main(int argc, char* argv[]) {
         Logger::instance().set_level(LogLevel::Debug);
     }
 
-    LOG_INFO("Bachuan Dashboard");
+    LOG_INFO("Baichuan Dashboard");
 
     // Parse configuration
     DashboardConfig config;
@@ -253,7 +350,7 @@ int main(int argc, char* argv[]) {
 
     // Create dashboard display
     DashboardDisplay display;
-    if (!display.create("Bachuan Dashboard", config.cameras, config.columns)) {
+    if (!display.create("Baichuan Dashboard", config.cameras, config.columns)) {
         LOG_ERROR("Failed to create dashboard");
         return 1;
     }

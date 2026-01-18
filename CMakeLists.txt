@@ -31,11 +31,13 @@ set(VIDEO_SOURCES
     src/video/decoder.cpp
     src/video/display.cpp
     src/video/writer.cpp
+    src/rtsp/rtsp_source.cpp
 )
 
 set(DASHBOARD_VIDEO_SOURCES
     src/video/decoder.cpp
     src/video/dashboard_display.cpp
+    src/rtsp/rtsp_source.cpp
 )
 
 set(UTILS_SOURCES
