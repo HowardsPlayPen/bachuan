@@ -6,6 +6,16 @@ A C++ client for viewing Reolink camera streams using the Baichuan (BC) protocol
 
 This project builds two applications:
 
+## Why?
+
+I own several reolink cameras and do NOT want to use the Windows native application 
+- I mainly use (Arch) Linux and the Windows app did not run
+- I do not trust the Windows app + it does not do everything I would like
+
+I searched and the best option seemed to be to use the Rust application below to act as a reolink -> rtsp bridge then use a video client like VLC. All this did was create a configuration headache and a REALLY laggy video (several seconds lag).
+
+I therefore decided to use Claude to port the Rust to a language I understand and give me straight out of the box a video display -so NOW I can connect to my reolinks on linux and have a real time display. I am now much happier
+
 ### baichuan
 
 Single camera viewer with GTK display. Connect to one Reolink camera and view its live video stream.
