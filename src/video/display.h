@@ -41,6 +41,9 @@ public:
     // Set close callback
     void on_close(CloseCallback cb) { close_callback_ = std::move(cb); }
 
+    // Set status message (shown before video starts)
+    void set_status(const std::string& status);
+
     // Get window dimensions
     int width() const { return width_; }
     int height() const { return height_; }
@@ -62,6 +65,10 @@ private:
     std::vector<uint8_t> frame_buffer_;
     std::mutex frame_mutex_;
     std::atomic<bool> frame_pending_{false};
+
+    // Status message (shown before video starts)
+    std::string status_message_;
+    std::atomic<bool> has_video_{false};
 
     // GTK callbacks (static, with user_data pointer)
     static gboolean on_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data);

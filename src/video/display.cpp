@@ -70,10 +70,29 @@ void VideoDisplay::update_frame(const DecodedFrame& frame) {
         frame_width_ = frame.width;
         frame_height_ = frame.height;
         frame_pending_.store(true);
+        has_video_.store(true);
     }
 
     // Schedule redraw from main thread
     g_idle_add(on_idle_update, this);
+}
+
+void VideoDisplay::set_status(const std::string& status) {
+    {
+        std::lock_guard<std::mutex> lock(frame_mutex_);
+        status_message_ = status;
+    }
+
+    // Schedule redraw to show status
+    if (drawing_area_) {
+        g_idle_add([](gpointer data) -> gboolean {
+            VideoDisplay* self = static_cast<VideoDisplay*>(data);
+            if (self->drawing_area_) {
+                gtk_widget_queue_draw(self->drawing_area_);
+            }
+            return FALSE;
+        }, this);
+    }
 }
 
 void VideoDisplay::run() {
@@ -121,6 +140,49 @@ gboolean VideoDisplay::on_draw(GtkWidget* widget, cairo_t* cr, gpointer user_dat
         cairo_pattern_set_filter(cairo_get_source(cr), CAIRO_FILTER_BILINEAR);
         cairo_paint(cr);
         cairo_restore(cr);
+    } else if (!self->has_video_.load()) {
+        // Show status message before video starts
+        std::string status;
+        {
+            std::lock_guard<std::mutex> lock(self->frame_mutex_);
+            status = self->status_message_;
+        }
+
+        if (!status.empty()) {
+            // Set up font
+            cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
+            cairo_set_font_size(cr, 18.0);
+
+            // Split status into lines
+            std::vector<std::string> lines;
+            size_t pos = 0;
+            size_t prev = 0;
+            while ((pos = status.find('\n', prev)) != std::string::npos) {
+                lines.push_back(status.substr(prev, pos - prev));
+                prev = pos + 1;
+            }
+            lines.push_back(status.substr(prev));
+
+            // Calculate total height
+            cairo_text_extents_t extents;
+            cairo_text_extents(cr, "Ay", &extents);
+            double line_height = extents.height + 8;
+            double total_height = line_height * lines.size();
+
+            // Draw each line centered
+            double y = (area_height - total_height) / 2.0 + extents.height;
+            for (const auto& line : lines) {
+                cairo_text_extents(cr, line.c_str(), &extents);
+                double x = (area_width - extents.width) / 2.0;
+
+                // Draw text with white color
+                cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
+                cairo_move_to(cr, x, y);
+                cairo_show_text(cr, line.c_str());
+
+                y += line_height;
+            }
+        }
     }
 
     return FALSE;

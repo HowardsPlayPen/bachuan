@@ -177,11 +177,53 @@ int main(int argc, char* argv[]) {
     LOG_INFO("Mode: {}", mode_str);
     LOG_INFO("Connecting to {}:{} as user '{}' (encryption: {})", host, port, username, encryption);
 
+    // Mode-specific setup - create display FIRST so we can show status during connection
+    std::unique_ptr<VideoDisplay> display;
+    std::unique_ptr<VideoWriter> video_writer;
+    std::atomic<bool> capture_done{false};
+    auto start_time = std::chrono::steady_clock::now();
+
+    if (mode == CaptureMode::Display) {
+        // Create display for live viewing
+        display = std::make_unique<VideoDisplay>();
+        if (!display->create("Bachuan Camera - " + host, 1280, 720)) {
+            LOG_ERROR("Failed to create display window");
+            return 1;
+        }
+        // Show initial connection status in window
+        display->set_status("Connecting to " + host + "...\nUser: " + username);
+        // Process pending GTK events to show the status
+        while (gtk_events_pending()) {
+            gtk_main_iteration();
+        }
+    } else if (mode == CaptureMode::Video) {
+        // Video writer will be initialized on first frame (we need dimensions)
+        video_writer = std::make_unique<VideoWriter>();
+        if (record_seconds > 0) {
+            LOG_INFO("Recording {} seconds of video to: {}", record_seconds, video_file);
+        } else {
+            LOG_INFO("Recording video to: {} (press Ctrl+C to stop)", video_file);
+        }
+    } else if (mode == CaptureMode::Image) {
+        LOG_INFO("Capturing snapshot to: {}", image_file);
+    }
+
     // Create connection
     Connection conn;
     if (!conn.connect(host, port)) {
         LOG_ERROR("Failed to connect to camera");
+        if (display) {
+            display->set_status("Connection failed!\n" + host);
+        }
         return 1;
+    }
+
+    // Update status before authentication
+    if (display) {
+        display->set_status("Connected to " + host + "\nAuthenticating as " + username + "...");
+        while (gtk_events_pending()) {
+            gtk_main_iteration();
+        }
     }
 
     // Authenticate
@@ -189,10 +231,21 @@ int main(int argc, char* argv[]) {
     auto login_result = auth.login(username, password, max_encryption);
     if (!login_result.success) {
         LOG_ERROR("Login failed: {}", login_result.error_message);
+        if (display) {
+            display->set_status("Login failed!\n" + login_result.error_message);
+        }
         return 1;
     }
 
     LOG_INFO("Login successful, encryption type: {}", static_cast<int>(login_result.encryption_type));
+
+    // Update status before starting stream
+    if (display) {
+        display->set_status("Logged in as " + username + "\nStarting video stream...");
+        while (gtk_events_pending()) {
+            gtk_main_iteration();
+        }
+    }
 
     // Create video decoder
     VideoDecoder decoder;
@@ -214,31 +267,6 @@ int main(int argc, char* argv[]) {
 
     // Create video stream
     VideoStream stream(conn);
-
-    // Mode-specific setup
-    std::unique_ptr<VideoDisplay> display;
-    std::unique_ptr<VideoWriter> video_writer;
-    std::atomic<bool> capture_done{false};
-    auto start_time = std::chrono::steady_clock::now();
-
-    if (mode == CaptureMode::Display) {
-        // Create display for live viewing
-        display = std::make_unique<VideoDisplay>();
-        if (!display->create("Bachuan Camera - " + host, 1280, 720)) {
-            LOG_ERROR("Failed to create display window");
-            return 1;
-        }
-    } else if (mode == CaptureMode::Video) {
-        // Video writer will be initialized on first frame (we need dimensions)
-        video_writer = std::make_unique<VideoWriter>();
-        if (record_seconds > 0) {
-            LOG_INFO("Recording {} seconds of video to: {}", record_seconds, video_file);
-        } else {
-            LOG_INFO("Recording video to: {} (press Ctrl+C to stop)", video_file);
-        }
-    } else if (mode == CaptureMode::Image) {
-        LOG_INFO("Capturing snapshot to: {}", image_file);
-    }
 
     // Handle stream info
     stream.on_stream_info([](const BcMediaInfo& info) {
