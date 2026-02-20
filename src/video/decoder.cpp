@@ -15,59 +15,63 @@ VideoDecoder::~VideoDecoder() {
     shutdown();
 }
 
+bool VideoDecoder::try_open_decoder(const AVCodec* decoder) {
+    codec_ctx_ = avcodec_alloc_context3(decoder);
+    if (!codec_ctx_) return false;
+
+    // Low latency flags
+    codec_ctx_->flags |= AV_CODEC_FLAG_LOW_DELAY;
+    codec_ctx_->flags2 |= AV_CODEC_FLAG2_FAST;
+
+    // Multi-threaded decoding
+    codec_ctx_->thread_count = 0;
+    codec_ctx_->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+
+    // Skip expensive processing on non-key frames (reduces CPU load)
+    codec_ctx_->skip_loop_filter = AVDISCARD_NONKEY;
+    codec_ctx_->skip_idct = AVDISCARD_NONKEY;
+
+    if (avcodec_open2(codec_ctx_, decoder, nullptr) < 0) {
+        avcodec_free_context(&codec_ctx_);
+        codec_ctx_ = nullptr;
+        return false;
+    }
+    return true;
+}
+
 bool VideoDecoder::init(VideoCodec codec) {
     if (initialized_) {
         shutdown();
     }
 
     codec_ = codec;
+    const char* codec_name = (codec == VideoCodec::H265) ? "H265" : "H264";
+
+    // List of decoders to try in priority order
+    const char* hw_name = (codec == VideoCodec::H265) ? "hevc_v4l2m2m" : "h264_v4l2m2m";
+    AVCodecID codec_id = (codec == VideoCodec::H265) ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264;
 
     const AVCodec* decoder = nullptr;
 
-    // Try hardware-accelerated decoders first (V4L2 M2M for Raspberry Pi)
-    if (codec == VideoCodec::H265) {
-        decoder = avcodec_find_decoder_by_name("hevc_v4l2m2m");
-        if (decoder) LOG_INFO("Using hardware HEVC decoder (v4l2m2m)");
+    // 1. Try hardware decoder (V4L2 M2M for Raspberry Pi / embedded)
+    decoder = avcodec_find_decoder_by_name(hw_name);
+    if (decoder && try_open_decoder(decoder)) {
+        LOG_INFO("Video decoder initialized: {} ({})", codec_name, decoder->name);
     } else {
-        decoder = avcodec_find_decoder_by_name("h264_v4l2m2m");
-        if (decoder) LOG_INFO("Using hardware H264 decoder (v4l2m2m)");
-    }
-
-    // Fall back to software decoder
-    if (!decoder) {
-        AVCodecID codec_id = (codec == VideoCodec::H265) ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264;
+        // 2. Fall back to software decoder
+        if (decoder) {
+            LOG_INFO("{} hardware decoder found but failed to open, falling back to software", codec_name);
+        }
         decoder = avcodec_find_decoder(codec_id);
         if (!decoder) {
-            LOG_ERROR("Failed to find {} decoder", codec == VideoCodec::H265 ? "H265" : "H264");
+            LOG_ERROR("Failed to find {} decoder", codec_name);
             return false;
         }
-        LOG_INFO("Using software {} decoder", codec == VideoCodec::H265 ? "H265" : "H264");
-    }
-
-    // Allocate codec context
-    codec_ctx_ = avcodec_alloc_context3(decoder);
-    if (!codec_ctx_) {
-        LOG_ERROR("Failed to allocate codec context");
-        return false;
-    }
-
-    // Set options for low latency
-    codec_ctx_->flags |= AV_CODEC_FLAG_LOW_DELAY;
-    codec_ctx_->flags2 |= AV_CODEC_FLAG2_FAST;
-
-    // Enable multi-threaded decoding for software decoders
-    codec_ctx_->thread_count = 0;  // auto-detect number of cores
-    codec_ctx_->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
-
-    // Skip non-reference frames when decoder is behind (reduces CPU load)
-    codec_ctx_->skip_loop_filter = AVDISCARD_NONKEY;
-    codec_ctx_->skip_idct = AVDISCARD_NONKEY;
-
-    // Open codec
-    if (avcodec_open2(codec_ctx_, decoder, nullptr) < 0) {
-        LOG_ERROR("Failed to open codec");
-        avcodec_free_context(&codec_ctx_);
-        return false;
+        if (!try_open_decoder(decoder)) {
+            LOG_ERROR("Failed to open {} software decoder", codec_name);
+            return false;
+        }
+        LOG_INFO("Video decoder initialized: {} ({})", codec_name, decoder->name);
     }
 
     // Allocate frame and packet
@@ -83,8 +87,6 @@ bool VideoDecoder::init(VideoCodec codec) {
 
     initialized_ = true;
     stats_ = Stats{};
-
-    LOG_INFO("Video decoder initialized: {} ({})", codec == VideoCodec::H265 ? "H265" : "H264", decoder->name);
     return true;
 }
 

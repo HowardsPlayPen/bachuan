@@ -6,6 +6,7 @@
 #include <cstdint>
 
 // Forward declarations for FFmpeg types
+struct AVCodec;
 struct AVCodecContext;
 struct AVFrame;
 struct AVPacket;
@@ -80,6 +81,7 @@ private:
 
     Stats stats_;
 
+    bool try_open_decoder(const AVCodec* decoder);
     bool setup_scaler(int width, int height);
     bool convert_to_rgb(DecodedFrame& output);
 };
