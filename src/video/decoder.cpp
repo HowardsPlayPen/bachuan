@@ -22,12 +22,26 @@ bool VideoDecoder::init(VideoCodec codec) {
 
     codec_ = codec;
 
-    // Find decoder
-    AVCodecID codec_id = (codec == VideoCodec::H265) ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264;
-    const AVCodec* decoder = avcodec_find_decoder(codec_id);
+    const AVCodec* decoder = nullptr;
+
+    // Try hardware-accelerated decoders first (V4L2 M2M for Raspberry Pi)
+    if (codec == VideoCodec::H265) {
+        decoder = avcodec_find_decoder_by_name("hevc_v4l2m2m");
+        if (decoder) LOG_INFO("Using hardware HEVC decoder (v4l2m2m)");
+    } else {
+        decoder = avcodec_find_decoder_by_name("h264_v4l2m2m");
+        if (decoder) LOG_INFO("Using hardware H264 decoder (v4l2m2m)");
+    }
+
+    // Fall back to software decoder
     if (!decoder) {
-        LOG_ERROR("Failed to find {} decoder", codec == VideoCodec::H265 ? "H265" : "H264");
-        return false;
+        AVCodecID codec_id = (codec == VideoCodec::H265) ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264;
+        decoder = avcodec_find_decoder(codec_id);
+        if (!decoder) {
+            LOG_ERROR("Failed to find {} decoder", codec == VideoCodec::H265 ? "H265" : "H264");
+            return false;
+        }
+        LOG_INFO("Using software {} decoder", codec == VideoCodec::H265 ? "H265" : "H264");
     }
 
     // Allocate codec context
@@ -40,6 +54,14 @@ bool VideoDecoder::init(VideoCodec codec) {
     // Set options for low latency
     codec_ctx_->flags |= AV_CODEC_FLAG_LOW_DELAY;
     codec_ctx_->flags2 |= AV_CODEC_FLAG2_FAST;
+
+    // Enable multi-threaded decoding for software decoders
+    codec_ctx_->thread_count = 0;  // auto-detect number of cores
+    codec_ctx_->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+
+    // Skip non-reference frames when decoder is behind (reduces CPU load)
+    codec_ctx_->skip_loop_filter = AVDISCARD_NONKEY;
+    codec_ctx_->skip_idct = AVDISCARD_NONKEY;
 
     // Open codec
     if (avcodec_open2(codec_ctx_, decoder, nullptr) < 0) {
@@ -62,7 +84,7 @@ bool VideoDecoder::init(VideoCodec codec) {
     initialized_ = true;
     stats_ = Stats{};
 
-    LOG_INFO("Video decoder initialized: {}", codec == VideoCodec::H265 ? "H265" : "H264");
+    LOG_INFO("Video decoder initialized: {} ({})", codec == VideoCodec::H265 ? "H265" : "H264", decoder->name);
     return true;
 }
 
