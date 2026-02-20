@@ -5,6 +5,7 @@
 #include "video/display.h"
 #include "video/writer.h"
 #include "rtsp/rtsp_source.h"
+#include "mjpeg/mjpeg_source.h"
 #include "utils/logger.h"
 
 #include <iostream>
@@ -21,7 +22,8 @@ using namespace baichuan;
 // Source type enum
 enum class SourceType {
     Baichuan,   // Reolink proprietary protocol
-    Rtsp        // Standard RTSP
+    Rtsp,       // Standard RTSP
+    Mjpeg       // HTTP MJPEG stream
 };
 
 // Global flag for signal handling
@@ -49,6 +51,9 @@ void print_usage(const char* program) {
               << "  -r, --rtsp <url>      RTSP URL (rtsp://[user:pass@]host[:port]/path)\n"
               << "  --transport <tcp|udp> RTSP transport protocol (default: tcp)\n"
               << "\n"
+              << "MJPEG Protocol Options:\n"
+              << "  -m, --mjpeg <url>     MJPEG URL (http://[user:pass@]host[:port]/path)\n"
+              << "\n"
               << "Common Options:\n"
               << "  -i, --img <file>      Capture single snapshot to JPEG file and exit\n"
               << "  -v, --video <file>    Record video to file (mp4/mpg/avi)\n"
@@ -68,7 +73,11 @@ void print_usage(const char* program) {
               << "\n"
               << "RTSP Examples:\n"
               << "  " << program << " --rtsp rtsp://admin:password@10.0.1.29:554/h264Preview_01_main\n"
-              << "  " << program << " --rtsp rtsp://10.0.1.29/stream --transport udp\n";
+              << "  " << program << " --rtsp rtsp://10.0.1.29/stream --transport udp\n"
+              << "\n"
+              << "MJPEG Examples:\n"
+              << "  " << program << " --mjpeg http://admin:password@10.0.1.29/mjpeg\n"
+              << "  " << program << " --mjpeg http://camera:8080/video.mjpg\n";
 }
 
 // Capture mode enum
@@ -89,10 +98,11 @@ int main(int argc, char* argv[]) {
     std::string encryption = "bc";
     bool debug = false;
 
-    // RTSP configuration
+    // RTSP/MJPEG configuration
     SourceType source_type = SourceType::Baichuan;
     std::string rtsp_url;
     std::string rtsp_transport = "tcp";
+    std::string mjpeg_url;
 
     // Capture options
     CaptureMode mode = CaptureMode::Display;
@@ -111,6 +121,7 @@ int main(int argc, char* argv[]) {
         {"encryption", required_argument, nullptr, 'e'},
         {"rtsp",       required_argument, nullptr, 'r'},
         {"transport",  required_argument, nullptr, 'T'},
+        {"mjpeg",      required_argument, nullptr, 'm'},
         {"img",        required_argument, nullptr, 'i'},
         {"video",      required_argument, nullptr, 'v'},
         {"time",       required_argument, nullptr, 't'},
@@ -120,7 +131,7 @@ int main(int argc, char* argv[]) {
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "h:p:u:P:c:s:e:r:T:i:v:t:d", long_options, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "h:p:u:P:c:s:e:r:T:m:i:v:t:d", long_options, nullptr)) != -1) {
         switch (opt) {
             case 'h':
                 host = optarg;
@@ -149,6 +160,10 @@ int main(int argc, char* argv[]) {
                 break;
             case 'T':
                 rtsp_transport = optarg;
+                break;
+            case 'm':
+                mjpeg_url = optarg;
+                source_type = SourceType::Mjpeg;
                 break;
             case 'i':
                 image_file = optarg;
@@ -211,18 +226,24 @@ int main(int argc, char* argv[]) {
 
     // Get display name based on source type
     std::string source_name;
-    if (source_type == SourceType::Rtsp) {
-        // Extract host from RTSP URL for display name
-        size_t at_pos = rtsp_url.find('@');
-        size_t host_start = (at_pos != std::string::npos) ? at_pos + 1 : 7; // after "rtsp://"
-        size_t host_end = rtsp_url.find('/', host_start);
-        if (host_end == std::string::npos) host_end = rtsp_url.length();
-        size_t port_pos = rtsp_url.find(':', host_start);
+    auto extract_host_from_url = [](const std::string& url, size_t proto_len) -> std::string {
+        size_t at_pos = url.find('@');
+        size_t host_start = (at_pos != std::string::npos) ? at_pos + 1 : proto_len;
+        size_t host_end = url.find('/', host_start);
+        if (host_end == std::string::npos) host_end = url.length();
+        size_t port_pos = url.find(':', host_start);
         if (port_pos != std::string::npos && port_pos < host_end) {
             host_end = port_pos;
         }
-        source_name = rtsp_url.substr(host_start, host_end - host_start);
+        return url.substr(host_start, host_end - host_start);
+    };
+
+    if (source_type == SourceType::Rtsp) {
+        source_name = extract_host_from_url(rtsp_url, 7);  // after "rtsp://"
         LOG_INFO("RTSP source: {} (transport: {})", rtsp_url, rtsp_transport);
+    } else if (source_type == SourceType::Mjpeg) {
+        source_name = extract_host_from_url(mjpeg_url, 7);  // after "http://"
+        LOG_INFO("MJPEG source: {}", mjpeg_url);
     } else {
         source_name = host;
         LOG_INFO("Baichuan source: {}:{} user '{}' (encryption: {})", host, port, username, encryption);
@@ -237,16 +258,22 @@ int main(int argc, char* argv[]) {
     if (mode == CaptureMode::Display) {
         // Create display for live viewing
         display = std::make_unique<VideoDisplay>();
-        std::string window_title = (source_type == SourceType::Rtsp) ?
-            "RTSP - " + source_name : "Baichuan - " + source_name;
+        std::string window_title;
+        std::string status_msg;
+        if (source_type == SourceType::Rtsp) {
+            window_title = "RTSP - " + source_name;
+            status_msg = "Connecting to RTSP...\n" + source_name;
+        } else if (source_type == SourceType::Mjpeg) {
+            window_title = "MJPEG - " + source_name;
+            status_msg = "Connecting to MJPEG...\n" + source_name;
+        } else {
+            window_title = "Baichuan - " + source_name;
+            status_msg = "Connecting to " + host + "...\nUser: " + username;
+        }
         if (!display->create(window_title, 1280, 720)) {
             LOG_ERROR("Failed to create display window");
             return 1;
         }
-        // Show initial connection status in window
-        std::string status_msg = (source_type == SourceType::Rtsp) ?
-            "Connecting to RTSP...\n" + source_name :
-            "Connecting to " + host + "...\nUser: " + username;
         display->set_status(status_msg);
         // Process pending GTK events to show the status
         while (gtk_events_pending()) {
@@ -404,6 +431,127 @@ int main(int argc, char* argv[]) {
         LOG_INFO("RTSP statistics:");
         LOG_INFO("  Frames decoded: {}", decoder_stats.frames_decoded);
         LOG_INFO("  Decode errors: {}", decoder_stats.decode_errors);
+
+        if (video_writer) {
+            LOG_INFO("  Video frames written: {}", video_writer->frames_written());
+        }
+    }
+    // ========== MJPEG Protocol Path ==========
+    else if (source_type == SourceType::Mjpeg) {
+        MjpegSource mjpeg_source;
+        mjpeg_source.set_url(mjpeg_url);
+
+        // Connect to MJPEG source
+        if (!mjpeg_source.connect()) {
+            LOG_ERROR("Failed to connect to MJPEG source");
+            if (display) {
+                display->set_status("MJPEG connection failed!\n" + source_name);
+            }
+            return 1;
+        }
+
+        // Update status
+        if (display) {
+            display->set_status("MJPEG connected\nStarting stream...");
+            while (gtk_events_pending()) {
+                gtk_main_iteration();
+            }
+        }
+
+        // Handle stream info
+        mjpeg_source.on_info([](int width, int height, int fps) {
+            (void)fps;  // MJPEG doesn't report FPS
+            LOG_INFO("MJPEG stream info: {}x{}", width, height);
+        });
+
+        // Handle decoded frames directly (MJPEG decodes internally)
+        mjpeg_source.on_frame([&](const DecodedFrame& decoded) {
+            if (g_quit.load() || capture_done.load()) {
+                return;
+            }
+
+            switch (mode) {
+                case CaptureMode::Display:
+                    if (display) {
+                        display->update_frame(decoded);
+                    }
+                    break;
+
+                case CaptureMode::Image:
+                    if (ImageWriter::save_jpeg(decoded, image_file)) {
+                        LOG_INFO("Snapshot saved successfully");
+                    } else {
+                        LOG_ERROR("Failed to save snapshot");
+                    }
+                    capture_done.store(true);
+                    break;
+
+                case CaptureMode::Video:
+                    if (video_writer && !video_writer->is_open()) {
+                        if (!video_writer->open(video_file, decoded.width, decoded.height, 25)) {
+                            LOG_ERROR("Failed to open video file: {}", video_file);
+                            capture_done.store(true);
+                            return;
+                        }
+                    }
+
+                    if (video_writer && video_writer->is_open()) {
+                        video_writer->write_frame(decoded);
+
+                        if (record_seconds > 0) {
+                            auto elapsed = std::chrono::steady_clock::now() - start_time;
+                            auto elapsed_sec = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+                            if (elapsed_sec >= record_seconds) {
+                                LOG_INFO("Recording time reached ({} seconds)", record_seconds);
+                                capture_done.store(true);
+                            }
+                        }
+                    }
+                    break;
+            }
+        });
+
+        // Handle errors
+        mjpeg_source.on_error([](const std::string& error) {
+            LOG_ERROR("MJPEG error: {}", error);
+        });
+
+        // Handle window close
+        if (display) {
+            display->on_close([&mjpeg_source]() {
+                LOG_INFO("Window closed");
+                mjpeg_source.stop();
+            });
+        }
+
+        // Start streaming
+        if (!mjpeg_source.start()) {
+            LOG_ERROR("Failed to start MJPEG stream");
+            return 1;
+        }
+
+        // Main loop
+        if (mode == CaptureMode::Display) {
+            display->run();
+        } else {
+            while (!g_quit.load() && !capture_done.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        }
+
+        // Cleanup MJPEG
+        mjpeg_source.stop();
+
+        if (video_writer && video_writer->is_open()) {
+            video_writer->close();
+        }
+
+        // Print MJPEG statistics
+        auto mjpeg_stats = mjpeg_source.stats();
+        LOG_INFO("MJPEG statistics:");
+        LOG_INFO("  Frames received: {}", mjpeg_stats.frames_received);
+        LOG_INFO("  Bytes received: {}", mjpeg_stats.bytes_received);
+        LOG_INFO("  Decode errors: {}", mjpeg_stats.decode_errors);
 
         if (video_writer) {
             LOG_INFO("  Video frames written: {}", video_writer->frames_written());

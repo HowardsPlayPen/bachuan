@@ -12,7 +12,8 @@ namespace baichuan {
 // Camera source type
 enum class CameraType {
     Baichuan,   // Reolink proprietary protocol
-    Rtsp        // Standard RTSP
+    Rtsp,       // Standard RTSP
+    Mjpeg       // HTTP MJPEG stream
 };
 
 // Camera configuration from JSON
@@ -29,15 +30,22 @@ struct CameraConfig {
     std::string stream;     // main, sub, extern
     uint8_t channel = 0;    // Channel ID
 
-    // RTSP-specific fields
-    std::string url;        // Full RTSP URL (rtsp://user:pass@host/path)
-    std::string transport = "tcp";  // tcp or udp
+    // RTSP/MJPEG URL field
+    std::string url;        // Full URL (rtsp:// or http://)
+    std::string transport = "tcp";  // tcp or udp (RTSP only)
+};
+
+// Control socket configuration
+struct ControlConfig {
+    std::string unix_path;  // Unix domain socket path (optional)
+    int tcp_port = 0;       // TCP port (optional, 0 = disabled)
 };
 
 // Dashboard configuration
 struct DashboardConfig {
     std::vector<CameraConfig> cameras;
     int columns = 2;        // Grid columns
+    ControlConfig control;
 };
 
 // Simple JSON parser for dashboard config
@@ -96,9 +104,27 @@ private:
             pos = obj_end + 1;
         }
 
+        // Parse optional "control" section
+        size_t ctrl_pos = json.find("\"control\"");
+        if (ctrl_pos != std::string::npos) {
+            size_t ctrl_obj_start = json.find('{', ctrl_pos);
+            if (ctrl_obj_start != std::string::npos) {
+                size_t ctrl_obj_end = find_matching_brace(json, ctrl_obj_start);
+                if (ctrl_obj_end != std::string::npos) {
+                    std::string ctrl_str = json.substr(ctrl_obj_start, ctrl_obj_end - ctrl_obj_start + 1);
+                    config.control.unix_path = parse_string(ctrl_str, "unix", "");
+                    size_t tcp_pos = ctrl_str.find("\"tcp_port\"");
+                    if (tcp_pos != std::string::npos) {
+                        config.control.tcp_port = parse_int(ctrl_str, tcp_pos);
+                    }
+                }
+            }
+        }
+
         return config;
     }
 
+public:
     static CameraConfig parse_camera(const std::string& json) {
         CameraConfig cam;
 
@@ -108,24 +134,29 @@ private:
         std::string type_str = parse_string(json, "type", "baichuan");
         if (type_str == "rtsp") {
             cam.type = CameraType::Rtsp;
+        } else if (type_str == "mjpeg") {
+            cam.type = CameraType::Mjpeg;
         } else {
             cam.type = CameraType::Baichuan;
         }
 
-        if (cam.type == CameraType::Rtsp) {
-            // RTSP camera - requires URL
+        if (cam.type == CameraType::Rtsp || cam.type == CameraType::Mjpeg) {
+            // RTSP/MJPEG camera - requires URL
             cam.url = parse_string(json, "url", "");
             cam.transport = parse_string(json, "transport", "tcp");
 
             if (cam.url.empty()) {
-                throw std::runtime_error("RTSP camera config missing 'url' field");
+                throw std::runtime_error("RTSP/MJPEG camera config missing 'url' field");
             }
 
             // Extract name from URL if not specified
             if (cam.name == "Camera") {
                 // Try to extract host from URL for display
                 size_t at_pos = cam.url.find('@');
-                size_t host_start = (at_pos != std::string::npos) ? at_pos + 1 : 7; // after "rtsp://"
+                // Find start after protocol (rtsp:// or http://)
+                size_t proto_end = cam.url.find("://");
+                size_t host_start = (at_pos != std::string::npos) ? at_pos + 1 :
+                                    (proto_end != std::string::npos) ? proto_end + 3 : 0;
                 size_t host_end = cam.url.find('/', host_start);
                 if (host_end == std::string::npos) host_end = cam.url.length();
                 size_t port_pos = cam.url.find(':', host_start);
@@ -199,6 +230,39 @@ private:
         return num_str.empty() ? 0 : std::stoi(num_str);
     }
 
+    // Parse a string value for a given key from a JSON string (public for reuse)
+    static std::string get_string(const std::string& json, const std::string& key, const std::string& default_val) {
+        return parse_string(json, key, default_val);
+    }
+
+    // Parse a boolean value for a given key (checks for "true")
+    static bool get_bool(const std::string& json, const std::string& key) {
+        std::string search = "\"" + key + "\"";
+        size_t pos = json.find(search);
+        if (pos == std::string::npos) return false;
+        size_t colon = json.find(':', pos);
+        if (colon == std::string::npos) return false;
+        size_t val_start = colon + 1;
+        while (val_start < json.size() && json[val_start] == ' ') val_start++;
+        return json.substr(val_start, 4) == "true";
+    }
+
+    static size_t find_matching_brace_pub(const std::string& json, size_t start) {
+        return find_matching_brace(json, start);
+    }
+
+    static size_t find_matching_bracket_pub(const std::string& json, size_t start) {
+        return find_matching_bracket(json, start);
+    }
+
+    static int get_int(const std::string& json, const std::string& key) {
+        std::string search = "\"" + key + "\"";
+        size_t pos = json.find(search);
+        if (pos == std::string::npos) return -1;
+        return parse_int(json, pos);
+    }
+
+private:
     static size_t find_matching_bracket(const std::string& json, size_t start) {
         if (start >= json.size() || json[start] != '[') return std::string::npos;
 

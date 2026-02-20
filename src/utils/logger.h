@@ -60,7 +60,7 @@ public:
     }
 
 private:
-    Logger() : level_(LogLevel::Info) {}
+    Logger() : level_(LogLevel::Error) {}
 
     template<typename... Args>
     void log(LogLevel level, const char* fmt, Args&&... args) {

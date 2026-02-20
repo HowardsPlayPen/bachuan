@@ -284,6 +284,154 @@ void DashboardDisplay::draw_pane(CameraPane* pane, cairo_t* cr, int width, int h
     }
 }
 
+// --- Dynamic pane control ---
+
+struct ShowOnlyData {
+    DashboardDisplay* display;
+    std::vector<size_t> indices;
+};
+
+void DashboardDisplay::show_only(const std::vector<size_t>& indices) {
+    auto* data = new ShowOnlyData{this, indices};
+    g_idle_add([](gpointer user_data) -> gboolean {
+        auto* d = static_cast<ShowOnlyData*>(user_data);
+        auto* self = d->display;
+
+        for (size_t i = 0; i < self->panes_.size(); i++) {
+            bool should_show = false;
+            for (size_t idx : d->indices) {
+                if (idx == i) { should_show = true; break; }
+            }
+            if (should_show) {
+                gtk_widget_show(self->panes_[i]->frame_widget);
+            } else {
+                gtk_widget_hide(self->panes_[i]->frame_widget);
+            }
+        }
+
+        delete d;
+        return FALSE;
+    }, data);
+}
+
+void DashboardDisplay::show_all_panes() {
+    g_idle_add([](gpointer user_data) -> gboolean {
+        auto* self = static_cast<DashboardDisplay*>(user_data);
+        for (auto& pane : self->panes_) {
+            gtk_widget_show(pane->frame_widget);
+        }
+        return FALSE;
+    }, this);
+}
+
+struct AddPaneData {
+    DashboardDisplay* display;
+    std::string name;
+    bool replace;  // if true, hide all existing panes
+};
+
+size_t DashboardDisplay::add_pane(const CameraConfig& config, bool replace) {
+    auto pane = std::make_unique<CameraPane>();
+    pane->name = config.name.empty() ? config.host : config.name;
+    pane->status = "Connecting...";
+
+    size_t new_index = panes_.size();
+    panes_.push_back(std::move(pane));
+
+    auto* data = new AddPaneData{this, panes_.back()->name, replace};
+
+    // We need to create the GTK widgets on the main thread
+    g_idle_add([](gpointer user_data) -> gboolean {
+        auto* d = static_cast<AddPaneData*>(user_data);
+        auto* self = d->display;
+
+        size_t idx = self->panes_.size() - 1;
+        auto& pane = self->panes_[idx];
+
+        // Create frame container
+        pane->frame_widget = gtk_frame_new(pane->name.c_str());
+        gtk_frame_set_label_align(GTK_FRAME(pane->frame_widget), 0.5, 0.5);
+
+        // Create drawing area
+        pane->drawing_area = gtk_drawing_area_new();
+        gtk_widget_set_size_request(pane->drawing_area, 630, 330);
+        gtk_widget_set_hexpand(pane->drawing_area, TRUE);
+        gtk_widget_set_vexpand(pane->drawing_area, TRUE);
+        gtk_container_add(GTK_CONTAINER(pane->frame_widget), pane->drawing_area);
+
+        // Connect draw signal
+        g_object_set_data(G_OBJECT(pane->drawing_area), "pane_index",
+                          GINT_TO_POINTER(static_cast<int>(idx)));
+        g_object_set_data(G_OBJECT(pane->drawing_area), "dashboard", self);
+        g_signal_connect(pane->drawing_area, "draw", G_CALLBACK(on_draw), pane.get());
+
+        // Add to grid
+        int row = static_cast<int>(idx) / self->columns_;
+        int col = static_cast<int>(idx) % self->columns_;
+        gtk_grid_attach(GTK_GRID(self->grid_), pane->frame_widget, col, row, 1, 1);
+
+        gtk_widget_show_all(pane->frame_widget);
+
+        if (d->replace) {
+            for (size_t i = 0; i < self->panes_.size() - 1; i++) {
+                gtk_widget_hide(self->panes_[i]->frame_widget);
+            }
+        }
+
+        delete d;
+        return FALSE;
+    }, data);
+
+    return new_index;
+}
+
+void DashboardDisplay::hide_window() {
+    g_idle_add([](gpointer user_data) -> gboolean {
+        auto* self = static_cast<DashboardDisplay*>(user_data);
+        if (self->window_) {
+            gtk_widget_hide(self->window_);
+        }
+        return FALSE;
+    }, this);
+}
+
+void DashboardDisplay::show_window() {
+    g_idle_add([](gpointer user_data) -> gboolean {
+        auto* self = static_cast<DashboardDisplay*>(user_data);
+        if (self->window_) {
+            gtk_widget_show(self->window_);
+        }
+        return FALSE;
+    }, this);
+}
+
+void DashboardDisplay::set_fullscreen(bool fullscreen) {
+    auto* data = new std::pair<DashboardDisplay*, bool>(this, fullscreen);
+    g_idle_add([](gpointer user_data) -> gboolean {
+        auto* d = static_cast<std::pair<DashboardDisplay*, bool>*>(user_data);
+        if (d->first->window_) {
+            if (d->second) {
+                gtk_window_fullscreen(GTK_WINDOW(d->first->window_));
+            } else {
+                gtk_window_unfullscreen(GTK_WINDOW(d->first->window_));
+            }
+        }
+        delete d;
+        return FALSE;
+    }, data);
+}
+
+std::vector<DashboardDisplay::PaneInfo> DashboardDisplay::get_pane_info(const std::vector<bool>& connected_flags) {
+    std::vector<PaneInfo> result;
+    for (size_t i = 0; i < panes_.size(); i++) {
+        auto& pane = panes_[i];
+        bool visible = pane->frame_widget ? gtk_widget_get_visible(pane->frame_widget) : false;
+        bool connected = (i < connected_flags.size()) ? connected_flags[i] : true;
+        result.push_back({pane->name, visible, connected});
+    }
+    return result;
+}
+
 gboolean DashboardDisplay::on_delete_event(GtkWidget* widget, GdkEvent* event, gpointer user_data) {
     (void)widget;
     (void)event;

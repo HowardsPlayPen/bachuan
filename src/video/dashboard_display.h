@@ -74,6 +74,36 @@ public:
     // Get number of panes
     size_t pane_count() const { return panes_.size(); }
 
+    // Show only the specified pane indices (hides all others)
+    void show_only(const std::vector<size_t>& indices);
+
+    // Show all panes
+    void show_all_panes();
+
+    // Add a new pane dynamically, returns the new pane index
+    // If replace=true, hides all existing panes
+    size_t add_pane(const CameraConfig& config, bool replace = false);
+
+    // Hide the entire window (headless mode)
+    void hide_window();
+
+    // Show the window
+    void show_window();
+
+    // Set fullscreen mode
+    void set_fullscreen(bool fullscreen);
+
+    // Pane info for the "list" command
+    struct PaneInfo {
+        std::string name;
+        bool visible;
+        bool connected;  // whether the camera worker is active
+    };
+
+    // Get current pane info (names + visibility + connection state)
+    // connected_flags: one bool per pane, true if camera is connected
+    std::vector<PaneInfo> get_pane_info(const std::vector<bool>& connected_flags = {});
+
 private:
     GtkWidget* window_ = nullptr;
     GtkWidget* main_box_ = nullptr;      // Horizontal box for menu + grid

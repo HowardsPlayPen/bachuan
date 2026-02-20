@@ -12,6 +12,7 @@ find_package(OpenSSL REQUIRED)
 pkg_check_modules(LIBXML2 REQUIRED libxml-2.0)
 pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
 pkg_check_modules(FFMPEG REQUIRED libavcodec libavformat libavutil libswscale)
+pkg_check_modules(LIBJPEG REQUIRED libjpeg)
 
 # Source files
 set(PROTOCOL_SOURCES
@@ -32,12 +33,15 @@ set(VIDEO_SOURCES
     src/video/display.cpp
     src/video/writer.cpp
     src/rtsp/rtsp_source.cpp
+    src/mjpeg/mjpeg_source.cpp
 )
 
 set(DASHBOARD_VIDEO_SOURCES
     src/video/decoder.cpp
     src/video/dashboard_display.cpp
     src/rtsp/rtsp_source.cpp
+    src/mjpeg/mjpeg_source.cpp
+    src/control/command_server.cpp
 )
 
 set(UTILS_SOURCES
@@ -75,6 +79,7 @@ target_include_directories(baichuan PRIVATE
     ${LIBXML2_INCLUDE_DIRS}
     ${GTK3_INCLUDE_DIRS}
     ${FFMPEG_INCLUDE_DIRS}
+    ${LIBJPEG_INCLUDE_DIRS}
 )
 
 target_link_libraries(baichuan PRIVATE
@@ -82,6 +87,7 @@ target_link_libraries(baichuan PRIVATE
     ${LIBXML2_LIBRARIES}
     ${GTK3_LIBRARIES}
     ${FFMPEG_LIBRARIES}
+    ${LIBJPEG_LIBRARIES}
     pthread
 )
 
@@ -101,6 +107,7 @@ target_include_directories(dashboard PRIVATE
     ${LIBXML2_INCLUDE_DIRS}
     ${GTK3_INCLUDE_DIRS}
     ${FFMPEG_INCLUDE_DIRS}
+    ${LIBJPEG_INCLUDE_DIRS}
 )
 
 target_link_libraries(dashboard PRIVATE
@@ -108,6 +115,7 @@ target_link_libraries(dashboard PRIVATE
     ${LIBXML2_LIBRARIES}
     ${GTK3_LIBRARIES}
     ${FFMPEG_LIBRARIES}
+    ${LIBJPEG_LIBRARIES}
     pthread
 )
 
