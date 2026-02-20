@@ -380,13 +380,17 @@ void camera_worker(CameraContext* ctx, DashboardDisplay* display) {
         // Run one connection cycle
         camera_worker_once(ctx, display);
 
-        // If we exited due to pause, loop back to wait for unpause
-        if (ctx->paused.load() && !g_quit.load()) {
-            continue;
-        }
+        // If quitting, exit
+        if (g_quit.load()) break;
 
-        // Otherwise (quit or permanent stop), exit
-        break;
+        // If paused, loop back to wait for unpause
+        if (ctx->paused.load()) continue;
+
+        // Stream dropped — reconnect after a delay
+        display->set_status(ctx->index, "Reconnecting...");
+        for (int i = 0; i < 50 && !g_quit.load() && !ctx->paused.load(); i++) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
     }
 }
 

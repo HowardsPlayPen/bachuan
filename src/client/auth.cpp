@@ -133,14 +133,24 @@ bool Authenticator::send_legacy_login() {
 }
 
 std::optional<Authenticator::EncryptionNegotiation> Authenticator::receive_encryption_negotiation() {
-    auto msg = conn_.receive_message(10000); // 10 second timeout for negotiation
-    if (!msg) {
-        LOG_ERROR("No response to legacy login");
-        return std::nullopt;
+    // Some cameras send unsolicited messages; skip them and wait for login response
+    std::optional<BcMessage> msg;
+    for (int attempts = 0; attempts < 5; attempts++) {
+        msg = conn_.receive_message(10000);
+        if (!msg) {
+            LOG_ERROR("No response to legacy login");
+            return std::nullopt;
+        }
+
+        if (msg->header.msg_id == MSG_ID_LOGIN) {
+            break;
+        }
+        LOG_DEBUG("Skipping unexpected message ID {} during negotiation", msg->header.msg_id);
+        msg.reset();
     }
 
-    if (msg->header.msg_id != MSG_ID_LOGIN) {
-        LOG_ERROR("Unexpected message ID in negotiation: {}", msg->header.msg_id);
+    if (!msg) {
+        LOG_ERROR("Did not receive negotiation response after retries");
         return std::nullopt;
     }
 
@@ -244,19 +254,29 @@ bool Authenticator::send_modern_login(const std::string& username,
 }
 
 std::optional<DeviceInfoXml> Authenticator::receive_login_response() {
-    auto msg = conn_.receive_message(10000);
+    // Some cameras send unsolicited messages during login; skip them
+    std::optional<BcMessage> msg;
+    for (int attempts = 0; attempts < 5; attempts++) {
+        msg = conn_.receive_message(10000);
+        if (!msg) {
+            LOG_ERROR("No response to modern login");
+            return std::nullopt;
+        }
+
+        if (msg->header.msg_id == MSG_ID_LOGIN) {
+            break;
+        }
+        LOG_DEBUG("Skipping unexpected message ID {} during login", msg->header.msg_id);
+        msg.reset();
+    }
+
     if (!msg) {
-        LOG_ERROR("No response to modern login");
+        LOG_ERROR("Did not receive login response after retries");
         return std::nullopt;
     }
 
     LOG_INFO("Login response: msg_id={}, response_code={}, class={}",
              msg->header.msg_id, msg->header.response_code, msg->header.msg_class);
-
-    if (msg->header.msg_id != MSG_ID_LOGIN) {
-        LOG_ERROR("Unexpected message ID in login response: {}", msg->header.msg_id);
-        return std::nullopt;
-    }
 
     // Log payload for debugging
     if (!msg->payload_data.empty()) {
