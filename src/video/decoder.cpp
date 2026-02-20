@@ -179,22 +179,11 @@ bool VideoDecoder::setup_scaler(int width, int height, int pix_fmt) {
     // Map deprecated YUVJ formats to their standard equivalents
     // (same pixel layout, just different color range metadata)
     AVPixelFormat src_fmt = static_cast<AVPixelFormat>(pix_fmt);
-    bool full_range = false;
     switch (src_fmt) {
-        case AV_PIX_FMT_YUVJ420P:
-            src_fmt = AV_PIX_FMT_YUV420P;
-            full_range = true;
-            break;
-        case AV_PIX_FMT_YUVJ422P:
-            src_fmt = AV_PIX_FMT_YUV422P;
-            full_range = true;
-            break;
-        case AV_PIX_FMT_YUVJ444P:
-            src_fmt = AV_PIX_FMT_YUV444P;
-            full_range = true;
-            break;
-        default:
-            break;
+        case AV_PIX_FMT_YUVJ420P: src_fmt = AV_PIX_FMT_YUV420P; break;
+        case AV_PIX_FMT_YUVJ422P: src_fmt = AV_PIX_FMT_YUV422P; break;
+        case AV_PIX_FMT_YUVJ444P: src_fmt = AV_PIX_FMT_YUV444P; break;
+        default: break;
     }
 
     // Create scaler context using the actual decoded frame format -> BGRA (Cairo's native format)
@@ -203,19 +192,6 @@ bool VideoDecoder::setup_scaler(int width, int height, int pix_fmt) {
         width, height, AV_PIX_FMT_BGRA,
         SWS_BILINEAR, nullptr, nullptr, nullptr
     );
-
-    if (sws_ctx_ && full_range) {
-        // Set source color range to full (JPEG) range
-        int dummy[4];
-        int src_range, dst_range, brightness, contrast, saturation;
-        sws_getColorspaceDetails(sws_ctx_, (int**)&dummy, &src_range,
-                                 (int**)&dummy, &dst_range,
-                                 &brightness, &contrast, &saturation);
-        const int* coefs = sws_getCoefficients(SWS_CS_DEFAULT);
-        sws_setColorspaceDetails(sws_ctx_, coefs, 1 /* full range */,
-                                 coefs, dst_range,
-                                 brightness, contrast, saturation);
-    }
 
     if (!sws_ctx_) {
         LOG_ERROR("Failed to create scaler context");
