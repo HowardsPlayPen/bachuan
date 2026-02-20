@@ -79,6 +79,11 @@ private:
     int output_width_ = 0;
     int output_height_ = 0;
 
+    // Aligned buffer for sws_scale output (NEON requires 32-byte alignment)
+    uint8_t* aligned_buf_ = nullptr;
+    int aligned_buf_size_ = 0;
+    int aligned_stride_ = 0;
+
     Stats stats_;
 
     bool try_open_decoder(const AVCodec* decoder);

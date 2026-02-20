@@ -227,7 +227,7 @@ void DashboardDisplay::draw_pane(CameraPane* pane, cairo_t* cr, int width, int h
                                                         pane->frame_width, pane->frame_height);
         }
 
-        // Copy BGRA data directly to surface (decoder already outputs Cairo's native format)
+        // Copy BGRA data directly to surface (decoder outputs Cairo's native format)
         unsigned char* surf_data = cairo_image_surface_get_data(pane->surface);
         int stride = cairo_image_surface_get_stride(pane->surface);
         int src_stride = pane->frame_width * 4;

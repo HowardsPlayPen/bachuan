@@ -101,6 +101,13 @@ void VideoDecoder::shutdown() {
         codec_ctx_ = nullptr;
     }
 
+    if (aligned_buf_) {
+        av_free(aligned_buf_);
+        aligned_buf_ = nullptr;
+        aligned_buf_size_ = 0;
+        aligned_stride_ = 0;
+    }
+
     initialized_ = false;
     output_width_ = 0;
     output_height_ = 0;
@@ -179,36 +186,41 @@ bool VideoDecoder::setup_scaler(int width, int height) {
         return false;
     }
 
-    // Setup BGRA frame buffer
-    int rgb_buf_size = av_image_get_buffer_size(AV_PIX_FMT_BGRA, width, height, 1);
-    if (rgb_buf_size < 0) {
-        LOG_ERROR("Failed to get BGRA buffer size");
-        return false;
+    // Allocate aligned buffer for sws_scale output (NEON/SSE require 32-byte alignment)
+    // Use stride aligned to 32 bytes for SIMD safety
+    aligned_stride_ = (width * 4 + 31) & ~31;
+    int buf_size = aligned_stride_ * height;
+
+    if (buf_size != aligned_buf_size_) {
+        if (aligned_buf_) av_free(aligned_buf_);
+        aligned_buf_ = static_cast<uint8_t*>(av_malloc(buf_size));
+        if (!aligned_buf_) {
+            LOG_ERROR("Failed to allocate aligned buffer");
+            aligned_buf_size_ = 0;
+            return false;
+        }
+        aligned_buf_size_ = buf_size;
     }
 
     output_width_ = width;
     output_height_ = height;
 
-    LOG_DEBUG("Scaler setup: {}x{}", width, height);
+    LOG_DEBUG("Scaler setup: {}x{} (stride {})", width, height, aligned_stride_);
     return true;
 }
 
 bool VideoDecoder::convert_to_rgb(DecodedFrame& output) {
-    if (!sws_ctx_) {
+    if (!sws_ctx_ || !aligned_buf_) {
         return false;
     }
 
     int width = frame_->width;
     int height = frame_->height;
 
-    // Allocate BGRA buffer (4 bytes per pixel, matches Cairo's native format)
-    output.rgb_data.resize(width * height * 4);
+    // sws_scale into the aligned buffer (safe for NEON/SSE)
+    uint8_t* dst_data[4] = {aligned_buf_, nullptr, nullptr, nullptr};
+    int dst_linesize[4] = {aligned_stride_, 0, 0, 0};
 
-    // Setup destination frame
-    uint8_t* dst_data[4] = {output.rgb_data.data(), nullptr, nullptr, nullptr};
-    int dst_linesize[4] = {width * 4, 0, 0, 0};
-
-    // Convert YUV to RGB
     int result = sws_scale(
         sws_ctx_,
         frame_->data, frame_->linesize,
@@ -219,6 +231,15 @@ bool VideoDecoder::convert_to_rgb(DecodedFrame& output) {
     if (result != height) {
         LOG_ERROR("sws_scale returned {}, expected {}", result, height);
         return false;
+    }
+
+    // Copy from aligned buffer to output (BGRA, 4 bytes per pixel)
+    int row_bytes = width * 4;
+    output.rgb_data.resize(row_bytes * height);
+    for (int y = 0; y < height; y++) {
+        memcpy(output.rgb_data.data() + y * row_bytes,
+               aligned_buf_ + y * aligned_stride_,
+               row_bytes);
     }
 
     output.width = width;

@@ -290,7 +290,7 @@ void VideoDisplay::update_surface() {
         LOG_DEBUG("Created cairo surface: {}x{}", frame_width_, frame_height_);
     }
 
-    // Copy BGRA data directly to surface (decoder already outputs Cairo's native format)
+    // Copy BGRA data directly to surface (decoder outputs Cairo's native format)
     unsigned char* surf_data = cairo_image_surface_get_data(surface_);
     int stride = cairo_image_surface_get_stride(surface_);
     int src_stride = frame_width_ * 4;

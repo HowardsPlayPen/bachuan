@@ -453,9 +453,9 @@ bool MjpegSource::decode_jpeg(const std::vector<uint8_t>& jpeg_data, DecodedFram
 
     frame.width = cinfo.output_width;
     frame.height = cinfo.output_height;
-    int rgb_stride = cinfo.output_width * cinfo.output_components;  // 3 bytes per pixel
+    int rgb_stride = cinfo.output_width * cinfo.output_components;
 
-    // Decode into temporary RGB buffer, then convert to BGRA
+    // Decode row by row, converting RGB -> BGRA to match decoder output format
     std::vector<uint8_t> rgb_row(rgb_stride);
     frame.rgb_data.resize(frame.width * frame.height * 4);
 
@@ -463,7 +463,6 @@ bool MjpegSource::decode_jpeg(const std::vector<uint8_t>& jpeg_data, DecodedFram
         uint8_t* row_ptr = rgb_row.data();
         jpeg_read_scanlines(&cinfo, &row_ptr, 1);
 
-        // Convert RGB -> BGRA for Cairo
         int y = cinfo.output_scanline - 1;
         uint8_t* dst = frame.rgb_data.data() + y * frame.width * 4;
         const uint8_t* src = rgb_row.data();
