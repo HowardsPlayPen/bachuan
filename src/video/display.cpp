@@ -290,25 +290,17 @@ void VideoDisplay::update_surface() {
         LOG_DEBUG("Created cairo surface: {}x{}", frame_width_, frame_height_);
     }
 
-    // Copy RGB24 data to ARGB32 surface (cairo uses BGRA internally)
+    // Copy BGRA data directly to surface (decoder already outputs Cairo's native format)
     unsigned char* surf_data = cairo_image_surface_get_data(surface_);
     int stride = cairo_image_surface_get_stride(surface_);
+    int src_stride = frame_width_ * 4;
 
     cairo_surface_flush(surface_);
 
     for (int y = 0; y < frame_height_; ++y) {
-        const uint8_t* src = frame_buffer_.data() + y * frame_width_ * 3;
-        uint8_t* dst = surf_data + y * stride;
-
-        for (int x = 0; x < frame_width_; ++x) {
-            // Convert RGB24 to BGRA (cairo's native format)
-            dst[0] = src[2];  // B
-            dst[1] = src[1];  // G
-            dst[2] = src[0];  // R
-            dst[3] = 255;     // A
-            src += 3;
-            dst += 4;
-        }
+        memcpy(surf_data + y * stride,
+               frame_buffer_.data() + y * src_stride,
+               src_stride);
     }
 
     cairo_surface_mark_dirty(surface_);

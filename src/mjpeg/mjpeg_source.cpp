@@ -442,7 +442,7 @@ bool MjpegSource::decode_jpeg(const std::vector<uint8_t>& jpeg_data, DecodedFram
         return false;
     }
 
-    // Request RGB output
+    // Request RGB output (libjpeg decodes to RGB)
     cinfo.out_color_space = JCS_RGB;
 
     // Start decompression
@@ -453,14 +453,28 @@ bool MjpegSource::decode_jpeg(const std::vector<uint8_t>& jpeg_data, DecodedFram
 
     frame.width = cinfo.output_width;
     frame.height = cinfo.output_height;
-    int row_stride = cinfo.output_width * cinfo.output_components;
+    int rgb_stride = cinfo.output_width * cinfo.output_components;  // 3 bytes per pixel
 
-    frame.rgb_data.resize(frame.height * row_stride);
+    // Decode into temporary RGB buffer, then convert to BGRA
+    std::vector<uint8_t> rgb_row(rgb_stride);
+    frame.rgb_data.resize(frame.width * frame.height * 4);
 
-    // Read scanlines
     while (cinfo.output_scanline < cinfo.output_height) {
-        uint8_t* row_ptr = frame.rgb_data.data() + cinfo.output_scanline * row_stride;
+        uint8_t* row_ptr = rgb_row.data();
         jpeg_read_scanlines(&cinfo, &row_ptr, 1);
+
+        // Convert RGB -> BGRA for Cairo
+        int y = cinfo.output_scanline - 1;
+        uint8_t* dst = frame.rgb_data.data() + y * frame.width * 4;
+        const uint8_t* src = rgb_row.data();
+        for (int x = 0; x < frame.width; x++) {
+            dst[0] = src[2];  // B
+            dst[1] = src[1];  // G
+            dst[2] = src[0];  // R
+            dst[3] = 255;     // A
+            src += 3;
+            dst += 4;
+        }
     }
 
     jpeg_finish_decompress(&cinfo);

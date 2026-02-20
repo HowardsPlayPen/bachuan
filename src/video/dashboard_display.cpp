@@ -227,24 +227,17 @@ void DashboardDisplay::draw_pane(CameraPane* pane, cairo_t* cr, int width, int h
                                                         pane->frame_width, pane->frame_height);
         }
 
-        // Copy RGB data to surface
+        // Copy BGRA data directly to surface (decoder already outputs Cairo's native format)
         unsigned char* surf_data = cairo_image_surface_get_data(pane->surface);
         int stride = cairo_image_surface_get_stride(pane->surface);
+        int src_stride = pane->frame_width * 4;
 
         cairo_surface_flush(pane->surface);
 
         for (int y = 0; y < pane->frame_height; ++y) {
-            const uint8_t* src = pane->frame_buffer.data() + y * pane->frame_width * 3;
-            uint8_t* dst = surf_data + y * stride;
-
-            for (int x = 0; x < pane->frame_width; ++x) {
-                dst[0] = src[2];  // B
-                dst[1] = src[1];  // G
-                dst[2] = src[0];  // R
-                dst[3] = 255;     // A
-                src += 3;
-                dst += 4;
-            }
+            memcpy(surf_data + y * stride,
+                   pane->frame_buffer.data() + y * src_stride,
+                   src_stride);
         }
 
         cairo_surface_mark_dirty(pane->surface);

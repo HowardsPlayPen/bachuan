@@ -4,10 +4,30 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/log.h>
 #include <libswscale/swscale.h>
 }
 
 namespace baichuan {
+
+// Suppress noisy FFmpeg log messages (v4l2m2m probing, deprecated format warnings)
+static void ffmpeg_log_callback(void* /*ptr*/, int level, const char* fmt, va_list vl) {
+    if (level > AV_LOG_WARNING) return;  // only errors and warnings
+    if (level > AV_LOG_ERROR) return;    // actually, only errors
+
+    char buf[512];
+    vsnprintf(buf, sizeof(buf), fmt, vl);
+    // Strip trailing newline
+    size_t len = strlen(buf);
+    if (len > 0 && buf[len - 1] == '\n') buf[len - 1] = '\0';
+    if (buf[0] != '\0') {
+        LOG_ERROR("FFmpeg: {}", buf);
+    }
+}
+
+static struct FfmpegLogInit {
+    FfmpegLogInit() { av_log_set_callback(ffmpeg_log_callback); }
+} s_ffmpeg_log_init;
 
 VideoDecoder::VideoDecoder() = default;
 
@@ -182,10 +202,10 @@ bool VideoDecoder::setup_scaler(int width, int height) {
         sws_ctx_ = nullptr;
     }
 
-    // Create scaler context for YUV420P to RGB24 conversion
+    // Create scaler context for YUV -> BGRA conversion (Cairo's native format)
     sws_ctx_ = sws_getContext(
         width, height, codec_ctx_->pix_fmt,
-        width, height, AV_PIX_FMT_RGB24,
+        width, height, AV_PIX_FMT_BGRA,
         SWS_BILINEAR, nullptr, nullptr, nullptr
     );
 
@@ -194,10 +214,10 @@ bool VideoDecoder::setup_scaler(int width, int height) {
         return false;
     }
 
-    // Setup RGB frame buffer
-    int rgb_buf_size = av_image_get_buffer_size(AV_PIX_FMT_RGB24, width, height, 1);
+    // Setup BGRA frame buffer
+    int rgb_buf_size = av_image_get_buffer_size(AV_PIX_FMT_BGRA, width, height, 1);
     if (rgb_buf_size < 0) {
-        LOG_ERROR("Failed to get RGB buffer size");
+        LOG_ERROR("Failed to get BGRA buffer size");
         return false;
     }
 
@@ -216,13 +236,12 @@ bool VideoDecoder::convert_to_rgb(DecodedFrame& output) {
     int width = frame_->width;
     int height = frame_->height;
 
-    // Allocate RGB buffer
-    int rgb_buf_size = av_image_get_buffer_size(AV_PIX_FMT_RGB24, width, height, 1);
-    output.rgb_data.resize(rgb_buf_size);
+    // Allocate BGRA buffer (4 bytes per pixel, matches Cairo's native format)
+    output.rgb_data.resize(width * height * 4);
 
     // Setup destination frame
     uint8_t* dst_data[4] = {output.rgb_data.data(), nullptr, nullptr, nullptr};
-    int dst_linesize[4] = {width * 3, 0, 0, 0};
+    int dst_linesize[4] = {width * 4, 0, 0, 0};
 
     // Convert YUV to RGB
     int result = sws_scale(
