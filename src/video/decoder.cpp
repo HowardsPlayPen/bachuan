@@ -66,33 +66,18 @@ bool VideoDecoder::init(VideoCodec codec) {
 
     codec_ = codec;
     const char* codec_name = (codec == VideoCodec::H265) ? "H265" : "H264";
-
-    // List of decoders to try in priority order
-    const char* hw_name = (codec == VideoCodec::H265) ? "hevc_v4l2m2m" : "h264_v4l2m2m";
     AVCodecID codec_id = (codec == VideoCodec::H265) ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264;
 
-    const AVCodec* decoder = nullptr;
-
-    // 1. Try hardware decoder (V4L2 M2M for Raspberry Pi / embedded)
-    decoder = avcodec_find_decoder_by_name(hw_name);
-    if (decoder && try_open_decoder(decoder)) {
-        LOG_INFO("Video decoder initialized: {} ({})", codec_name, decoder->name);
-    } else {
-        // 2. Fall back to software decoder
-        if (decoder) {
-            LOG_INFO("{} hardware decoder found but failed to open, falling back to software", codec_name);
-        }
-        decoder = avcodec_find_decoder(codec_id);
-        if (!decoder) {
-            LOG_ERROR("Failed to find {} decoder", codec_name);
-            return false;
-        }
-        if (!try_open_decoder(decoder)) {
-            LOG_ERROR("Failed to open {} software decoder", codec_name);
-            return false;
-        }
-        LOG_INFO("Video decoder initialized: {} ({})", codec_name, decoder->name);
+    const AVCodec* decoder = avcodec_find_decoder(codec_id);
+    if (!decoder) {
+        LOG_ERROR("Failed to find {} decoder", codec_name);
+        return false;
     }
+    if (!try_open_decoder(decoder)) {
+        LOG_ERROR("Failed to open {} decoder", codec_name);
+        return false;
+    }
+    LOG_INFO("Video decoder initialized: {} ({})", codec_name, decoder->name);
 
     // Allocate frame and packet
     frame_ = av_frame_alloc();
