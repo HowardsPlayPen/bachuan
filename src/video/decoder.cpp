@@ -10,25 +10,6 @@ extern "C" {
 
 namespace baichuan {
 
-// Suppress noisy FFmpeg log messages (v4l2m2m probing, deprecated format warnings)
-static void ffmpeg_log_callback(void* /*ptr*/, int level, const char* fmt, va_list vl) {
-    if (level > AV_LOG_WARNING) return;  // only errors and warnings
-    if (level > AV_LOG_ERROR) return;    // actually, only errors
-
-    char buf[512];
-    vsnprintf(buf, sizeof(buf), fmt, vl);
-    // Strip trailing newline
-    size_t len = strlen(buf);
-    if (len > 0 && buf[len - 1] == '\n') buf[len - 1] = '\0';
-    if (buf[0] != '\0') {
-        LOG_ERROR("FFmpeg: {}", buf);
-    }
-}
-
-static struct FfmpegLogInit {
-    FfmpegLogInit() { av_log_set_callback(ffmpeg_log_callback); }
-} s_ffmpeg_log_init;
-
 VideoDecoder::VideoDecoder() = default;
 
 VideoDecoder::~VideoDecoder() {
@@ -36,6 +17,9 @@ VideoDecoder::~VideoDecoder() {
 }
 
 bool VideoDecoder::try_open_decoder(const AVCodec* decoder) {
+    // Silence FFmpeg's own log output (v4l2m2m probing, deprecated format, etc.)
+    av_log_set_level(AV_LOG_QUIET);
+
     codec_ctx_ = avcodec_alloc_context3(decoder);
     if (!codec_ctx_) return false;
 
@@ -43,13 +27,9 @@ bool VideoDecoder::try_open_decoder(const AVCodec* decoder) {
     codec_ctx_->flags |= AV_CODEC_FLAG_LOW_DELAY;
     codec_ctx_->flags2 |= AV_CODEC_FLAG2_FAST;
 
-    // Multi-threaded decoding
+    // Multi-threaded decoding (frame-level only, slice threading can cause issues)
     codec_ctx_->thread_count = 0;
-    codec_ctx_->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
-
-    // Skip expensive processing on non-key frames (reduces CPU load)
-    codec_ctx_->skip_loop_filter = AVDISCARD_NONKEY;
-    codec_ctx_->skip_idct = AVDISCARD_NONKEY;
+    codec_ctx_->thread_type = FF_THREAD_FRAME;
 
     if (avcodec_open2(codec_ctx_, decoder, nullptr) < 0) {
         avcodec_free_context(&codec_ctx_);
