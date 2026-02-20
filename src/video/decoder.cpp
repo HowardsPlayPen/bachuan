@@ -235,14 +235,6 @@ bool VideoDecoder::convert_to_rgb(DecodedFrame& output) {
     uint8_t* dst_data[4] = {aligned_buf_, nullptr, nullptr, nullptr};
     int dst_linesize[4] = {aligned_stride_, 0, 0, 0};
 
-    // Diagnostic: log frame details on first call or failure
-    if (stats_.frames_decoded == 0) {
-        LOG_ERROR("First frame: {}x{} fmt={} linesize=[{},{},{},{}] data=[{},{},{},{}]",
-            width, height, frame_->format,
-            frame_->linesize[0], frame_->linesize[1], frame_->linesize[2], frame_->linesize[3],
-            (void*)frame_->data[0], (void*)frame_->data[1], (void*)frame_->data[2], (void*)frame_->data[3]);
-    }
-
     int result = sws_scale(
         sws_ctx_,
         frame_->data, frame_->linesize,
