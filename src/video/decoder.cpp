@@ -186,10 +186,11 @@ bool VideoDecoder::setup_scaler(int width, int height, int pix_fmt) {
         default: break;
     }
 
-    // Create scaler context using the actual decoded frame format -> BGRA (Cairo's native format)
+    // Create scaler context: YUV -> RGB24 (BGRA not supported on all platforms)
+    // We convert RGB24 -> BGRA manually afterwards
     sws_ctx_ = sws_getContext(
         width, height, src_fmt,
-        width, height, AV_PIX_FMT_BGRA,
+        width, height, AV_PIX_FMT_RGB24,
         SWS_BILINEAR, nullptr, nullptr, nullptr
     );
 
@@ -199,8 +200,8 @@ bool VideoDecoder::setup_scaler(int width, int height, int pix_fmt) {
     }
 
     // Allocate aligned buffer for sws_scale output (NEON/SSE require 32-byte alignment)
-    // Use stride aligned to 32 bytes for SIMD safety
-    aligned_stride_ = (width * 4 + 31) & ~31;
+    // Use stride aligned to 32 bytes for SIMD safety (RGB24 = 3 bytes per pixel)
+    aligned_stride_ = (width * 3 + 31) & ~31;
     int buf_size = aligned_stride_ * height;
 
     if (buf_size != aligned_buf_size_) {
@@ -255,13 +256,19 @@ bool VideoDecoder::convert_to_rgb(DecodedFrame& output) {
         return false;
     }
 
-    // Copy from aligned buffer to output (BGRA, 4 bytes per pixel)
-    int row_bytes = width * 4;
-    output.rgb_data.resize(row_bytes * height);
+    // Convert RGB24 (aligned buffer) -> BGRA (output) for Cairo
+    output.rgb_data.resize(width * height * 4);
     for (int y = 0; y < height; y++) {
-        memcpy(output.rgb_data.data() + y * row_bytes,
-               aligned_buf_ + y * aligned_stride_,
-               row_bytes);
+        const uint8_t* src = aligned_buf_ + y * aligned_stride_;
+        uint8_t* dst = output.rgb_data.data() + y * width * 4;
+        for (int x = 0; x < width; x++) {
+            dst[0] = src[2];  // B
+            dst[1] = src[1];  // G
+            dst[2] = src[0];  // R
+            dst[3] = 255;     // A
+            src += 3;
+            dst += 4;
+        }
     }
 
     output.width = width;
