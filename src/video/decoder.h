@@ -78,6 +78,7 @@ private:
 
     int output_width_ = 0;
     int output_height_ = 0;
+    int input_pix_fmt_ = -1;
 
     // Aligned buffer for sws_scale output (NEON requires 32-byte alignment)
     uint8_t* aligned_buf_ = nullptr;
@@ -87,7 +88,7 @@ private:
     Stats stats_;
 
     bool try_open_decoder(const AVCodec* decoder);
-    bool setup_scaler(int width, int height);
+    bool setup_scaler(int width, int height, int pix_fmt);
     bool convert_to_rgb(DecodedFrame& output);
 };
 

@@ -111,6 +111,7 @@ void VideoDecoder::shutdown() {
     initialized_ = false;
     output_width_ = 0;
     output_height_ = 0;
+    input_pix_fmt_ = -1;
 }
 
 bool VideoDecoder::decode(const uint8_t* data, size_t len, DecodedFrameCallback callback) {
@@ -144,9 +145,10 @@ bool VideoDecoder::decode(const uint8_t* data, size_t len, DecodedFrameCallback 
             break;
         }
 
-        // Setup scaler if needed (first frame or resolution change)
-        if (frame_->width != output_width_ || frame_->height != output_height_) {
-            if (!setup_scaler(frame_->width, frame_->height)) {
+        // Setup scaler if needed (first frame, resolution change, or format change)
+        if (frame_->width != output_width_ || frame_->height != output_height_ ||
+            frame_->format != input_pix_fmt_) {
+            if (!setup_scaler(frame_->width, frame_->height, frame_->format)) {
                 LOG_ERROR("Failed to setup scaler");
                 continue;
             }
@@ -168,15 +170,15 @@ bool VideoDecoder::decode(const uint8_t* data, size_t len, DecodedFrameCallback 
     return decoded;
 }
 
-bool VideoDecoder::setup_scaler(int width, int height) {
+bool VideoDecoder::setup_scaler(int width, int height, int pix_fmt) {
     if (sws_ctx_) {
         sws_freeContext(sws_ctx_);
         sws_ctx_ = nullptr;
     }
 
-    // Create scaler context for YUV -> BGRA conversion (Cairo's native format)
+    // Create scaler context using the actual decoded frame format -> BGRA (Cairo's native format)
     sws_ctx_ = sws_getContext(
-        width, height, codec_ctx_->pix_fmt,
+        width, height, static_cast<AVPixelFormat>(pix_fmt),
         width, height, AV_PIX_FMT_BGRA,
         SWS_BILINEAR, nullptr, nullptr, nullptr
     );
@@ -204,8 +206,9 @@ bool VideoDecoder::setup_scaler(int width, int height) {
 
     output_width_ = width;
     output_height_ = height;
+    input_pix_fmt_ = pix_fmt;
 
-    LOG_DEBUG("Scaler setup: {}x{} (stride {})", width, height, aligned_stride_);
+    LOG_DEBUG("Scaler setup: {}x{} fmt={} (stride {})", width, height, pix_fmt, aligned_stride_);
     return true;
 }
 
