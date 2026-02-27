@@ -63,27 +63,24 @@ bool VideoStream::start(const StreamConfig& config) {
 }
 
 void VideoStream::stop() {
-    if (!streaming_.load()) {
-        return;
+    bool was_streaming = streaming_.exchange(false);
+
+    if (was_streaming) {
+        LOG_INFO("Stopping video stream");
+        // Send stop request (best effort, will fail if connection already dead)
+        send_stop_request();
     }
 
-    LOG_INFO("Stopping video stream");
-    streaming_.store(false);
-
-    // Send stop request (best effort)
-    send_stop_request();
-
-    // Wait for receive thread to finish
+    // Always join the receive thread if it's running
     if (receive_thread_.joinable()) {
         receive_thread_.join();
     }
 
-    {
+    if (was_streaming) {
         std::lock_guard<std::mutex> lock(binary_mode_mutex_);
         binary_mode_nums_.clear();
+        LOG_INFO("Video stream stopped");
     }
-
-    LOG_INFO("Video stream stopped");
 }
 
 bool VideoStream::send_start_request() {
@@ -124,9 +121,27 @@ void VideoStream::receive_loop() {
     LOG_DEBUG("Receive loop started");
 
     while (streaming_.load()) {
+        if (!conn_.is_connected()) {
+            LOG_ERROR("Connection lost, stopping receive loop");
+            streaming_.store(false);
+            if (error_callback_) {
+                error_callback_("Connection lost");
+            }
+            break;
+        }
+
         auto msg = conn_.receive_message(1000);
         if (!msg) {
-            // Timeout is OK, just continue
+            // Check if connection was closed during receive
+            if (!conn_.is_connected()) {
+                LOG_ERROR("Connection lost during receive, stopping");
+                streaming_.store(false);
+                if (error_callback_) {
+                    error_callback_("Connection lost");
+                }
+                break;
+            }
+            // Otherwise it was just a timeout, continue
             continue;
         }
 

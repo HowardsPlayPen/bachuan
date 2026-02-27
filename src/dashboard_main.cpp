@@ -13,6 +13,7 @@
 #include <string>
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <vector>
 #include <thread>
 #include <csignal>
@@ -99,6 +100,9 @@ struct CameraContext {
     std::thread worker_thread;
     std::atomic<bool> running{false};
     std::atomic<bool> paused{false};   // When true, worker disconnects and waits
+    // Stream switching: protected by mutex since std::string isn't atomic
+    std::mutex stream_mutex;
+    std::string pending_stream;  // Empty means no change requested
 };
 
 MaxEncryption string_to_encryption(const std::string& enc) {
@@ -269,6 +273,15 @@ void baichuan_camera_worker(CameraContext* ctx, DashboardDisplay* display) {
     // Create decoder
     ctx->decoder = std::make_unique<VideoDecoder>();
 
+    // Apply any pending stream switch before configuring
+    {
+        std::lock_guard<std::mutex> lock(ctx->stream_mutex);
+        if (!ctx->pending_stream.empty()) {
+            ctx->config.stream = ctx->pending_stream;
+            ctx->pending_stream.clear();
+        }
+    }
+
     // Configure stream
     StreamConfig stream_config;
     stream_config.channel_id = ctx->config.channel;
@@ -339,8 +352,17 @@ void baichuan_camera_worker(CameraContext* ctx, DashboardDisplay* display) {
         return;
     }
 
-    // Wait until quit or pause requested
+    // Wait until quit, pause, stream switch, or connection lost
     while (ctx->running.load() && !g_quit.load() && !ctx->paused.load()) {
+        {
+            std::lock_guard<std::mutex> lock(ctx->stream_mutex);
+            if (!ctx->pending_stream.empty()) break;  // Stream switch requested
+        }
+        // Detect dead connection (e.g. after system freeze/resume)
+        if (!ctx->stream->is_streaming() || !ctx->connection->is_connected()) {
+            LOG_WARN("Camera {}: Connection lost, will reconnect", ctx->index);
+            break;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
@@ -385,6 +407,15 @@ void camera_worker(CameraContext* ctx, DashboardDisplay* display) {
 
         // If paused, loop back to wait for unpause
         if (ctx->paused.load()) continue;
+
+        // If stream switch is pending, reconnect immediately
+        {
+            std::lock_guard<std::mutex> lock(ctx->stream_mutex);
+            if (!ctx->pending_stream.empty()) {
+                display->set_status(ctx->index, "Switching stream...");
+                continue;
+            }
+        }
 
         // Stream dropped — reconnect after a delay
         display->set_status(ctx->index, "Reconnecting...");
@@ -696,6 +727,52 @@ int main(int argc, char* argv[]) {
                 return "{\"ok\": true, \"index\": " + std::to_string(new_index) + "}";
             }
 
+            // --- stream: switch stream type for baichuan cameras ---
+            if (cmd_json.find("\"stream\"") != std::string::npos) {
+                std::string new_stream = JsonConfigParser::get_string(cmd_json, "stream", "");
+                if (new_stream != "main" && new_stream != "sub" && new_stream != "extern") {
+                    return "{\"error\": \"stream must be \\\"main\\\", \\\"sub\\\", or \\\"extern\\\"\"}";
+                }
+
+                // Determine which cameras to switch
+                auto indices = parse_indices(cmd_json, "index");
+                std::vector<CameraContext*> targets;
+
+                if (indices.empty()) {
+                    // No index specified — apply to all baichuan cameras
+                    for (auto& ctx : cameras) {
+                        if (ctx->config.type == CameraType::Baichuan) {
+                            targets.push_back(ctx.get());
+                        }
+                    }
+                } else {
+                    for (size_t idx : indices) {
+                        if (idx >= cameras.size()) {
+                            return "{\"error\": \"index " + std::to_string(idx) + " out of range\"}";
+                        }
+                        if (cameras[idx]->config.type != CameraType::Baichuan) {
+                            return "{\"error\": \"camera " + std::to_string(idx) + " is not baichuan\"}";
+                        }
+                        targets.push_back(cameras[idx].get());
+                    }
+                }
+
+                for (auto* ctx : targets) {
+                    {
+                        std::lock_guard<std::mutex> lock(ctx->stream_mutex);
+                        if (ctx->config.stream == new_stream && ctx->pending_stream.empty()) {
+                            continue;  // Already on this stream
+                        }
+                        ctx->pending_stream = new_stream;
+                    }
+                    // Kick the worker out of its wait loop
+                    ctx->running.store(false);
+                    LOG_INFO("Camera {}: Switching to {} stream", ctx->index, new_stream);
+                }
+
+                return "{\"ok\": true}";
+            }
+
             // --- list: return feed info ---
             if (cmd_json.find("\"list\"") != std::string::npos) {
                 // Build connected flags from camera contexts
@@ -712,7 +789,12 @@ int main(int argc, char* argv[]) {
                     result += "{\"index\": " + std::to_string(i) +
                               ", \"name\": \"" + panes[i].name + "\"" +
                               ", \"visible\": " + (panes[i].visible ? "true" : "false") +
-                              ", \"connected\": " + (panes[i].connected ? "true" : "false") + "}";
+                              ", \"connected\": " + (panes[i].connected ? "true" : "false");
+                    // Include stream type for baichuan cameras
+                    if (i < cameras.size() && cameras[i]->config.type == CameraType::Baichuan) {
+                        result += ", \"stream\": \"" + cameras[i]->config.stream + "\"";
+                    }
+                    result += "}";
                 }
                 result += "]}";
                 return result;

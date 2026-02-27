@@ -174,6 +174,7 @@ std::optional<BcMessage> Connection::receive_message(int timeout_ms) {
             } else {
                 LOG_ERROR("Receive error: {}", strerror(errno));
             }
+            disconnect();
             return std::nullopt;
         }
         recv_buffer_.insert(recv_buffer_.end(), temp, temp + n);
@@ -204,6 +205,7 @@ std::optional<BcMessage> Connection::receive_message(int timeout_ms) {
             } else {
                 LOG_ERROR("Receive error: {}", strerror(errno));
             }
+            disconnect();
             return std::nullopt;
         }
         recv_buffer_.insert(recv_buffer_.end(), temp, temp + n);
@@ -394,11 +396,19 @@ bool Connection::wait_for_data(int timeout_ms) {
 
     int result = poll(&pfd, 1, timeout_ms);
     if (result < 0) {
+        if (errno == EINTR) return false; // Interrupted, treat as timeout
         LOG_ERROR("Poll error: {}", strerror(errno));
+        disconnect();
         return false;
     }
     if (result == 0) {
         return false; // Timeout
+    }
+    // Check for socket errors or hangup
+    if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+        LOG_ERROR("Socket error detected (revents=0x{:x})", pfd.revents);
+        disconnect();
+        return false;
     }
     return true;
 }
