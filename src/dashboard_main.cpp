@@ -17,6 +17,7 @@
 #include <vector>
 #include <thread>
 #include <csignal>
+#include <cstdlib>
 #include <getopt.h>
 
 using namespace baichuan;
@@ -30,11 +31,28 @@ void signal_handler(int signum) {
     g_quit.store(true);
 }
 
+// Default config path follows the XDG Base Directory spec:
+//   $XDG_CONFIG_HOME/baichuan/config.json, falling back to
+//   $HOME/.config/baichuan/config.json.
+std::string default_config_path() {
+    const char* xdg = std::getenv("XDG_CONFIG_HOME");
+    if (xdg && *xdg) {
+        return std::string(xdg) + "/baichuan/config.json";
+    }
+    const char* home = std::getenv("HOME");
+    if (home && *home) {
+        return std::string(home) + "/.config/baichuan/config.json";
+    }
+    return {};
+}
+
 void print_usage(const char* program) {
-    std::cerr << "Usage: " << program << " -c <config.json> [options]\n"
+    std::cerr << "Usage: " << program << " [-c <config.json>] [options]\n"
               << "\n"
               << "Options:\n"
-              << "  -c, --config <file>   JSON configuration file (required)\n"
+              << "  -c, --config <file>   JSON configuration file\n"
+              << "                        (default: $XDG_CONFIG_HOME/baichuan/config.json,\n"
+              << "                         or ~/.config/baichuan/config.json)\n"
               << "  -d, --debug           Enable debug logging\n"
               << "  -H, --hidden          Start with window hidden (headless mode)\n"
               << "  --help                Show this help message\n"
@@ -459,9 +477,12 @@ int main(int argc, char* argv[]) {
     }
 
     if (config_file.empty()) {
-        std::cerr << "Error: Configuration file required\n\n";
-        print_usage(argv[0]);
-        return 1;
+        config_file = default_config_path();
+        if (config_file.empty()) {
+            std::cerr << "Error: No config file specified and HOME is unset\n\n";
+            print_usage(argv[0]);
+            return 1;
+        }
     }
 
     // Configure logging
@@ -472,6 +493,7 @@ int main(int argc, char* argv[]) {
     LOG_INFO("Baichuan Dashboard");
 
     // Parse configuration
+    LOG_INFO("Loading config: {}", config_file);
     DashboardConfig config;
     try {
         config = JsonConfigParser::parse(config_file);
