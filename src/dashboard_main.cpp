@@ -22,6 +22,12 @@
 
 using namespace baichuan;
 
+// Documentation URL shown in --help. Set at compile time via CMake (-DHELP_URL=...);
+// this fallback keeps the source self-contained if built without the definition.
+#ifndef HELP_URL
+#define HELP_URL "https://github.com/HowardsPlayPen/bachuan"
+#endif
+
 // Global flag for signal handling
 static std::atomic<bool> g_quit{false};
 
@@ -56,6 +62,14 @@ void print_usage(const char* program) {
               << "  -d, --debug           Enable debug logging\n"
               << "  -H, --hidden          Start with window hidden (headless mode)\n"
               << "  --help                Show this help message\n"
+              << "\n"
+              << "Keyboard controls (when the dashboard window has focus):\n"
+              << "  1-9                   Focus a single camera (1 = first camera)\n"
+              << "  0                     Return to the overview (show all cameras)\n"
+              << "  r                     Toggle low/high resolution (sub/main stream)\n"
+              << "                        of the focused camera, or all in overview\n"
+              << "  An optional modifier can be required via \"hotkey_modifier\" in the\n"
+              << "  config (e.g. \"ctrl\" makes the shortcuts CTRL+1 .. CTRL+0 / CTRL+R).\n"
               << "\n"
               << "Configuration file format (Baichuan camera):\n"
               << "  {\n"
@@ -99,7 +113,10 @@ void print_usage(const char* program) {
               << "  }\n"
               << "\n"
               << "Example:\n"
-              << "  " << program << " -c cameras.json\n";
+              << "  " << program << " -c cameras.json\n"
+              << "\n"
+              << "For more help and documentation, see:\n"
+              << "  " << HELP_URL << "\n";
 }
 
 // Per-camera context
@@ -831,6 +848,29 @@ int main(int argc, char* argv[]) {
             LOG_INFO("Command server started");
         }
     }
+
+    // Configure keyboard hotkeys: optional modifier + resolution toggle
+    display.set_hotkey_modifier(config.hotkey_modifier);
+    display.on_toggle_resolution([&cameras](int focused_index) {
+        // Toggle each target baichuan camera between its low (sub) and high (main)
+        // resolution stream. focused_index == -1 means "all cameras".
+        for (auto& ctx : cameras) {
+            if (ctx->config.type != CameraType::Baichuan) continue;
+            if (focused_index >= 0 && ctx->index != static_cast<size_t>(focused_index)) continue;
+
+            std::string target;
+            {
+                std::lock_guard<std::mutex> lock(ctx->stream_mutex);
+                const std::string& current =
+                    ctx->pending_stream.empty() ? ctx->config.stream : ctx->pending_stream;
+                target = (current == "main") ? "sub" : "main";
+                ctx->pending_stream = target;
+            }
+            // Kick the worker out of its wait loop so it reconnects on the new stream
+            ctx->running.store(false);
+            LOG_INFO("Camera {}: Toggling resolution to {} stream", ctx->index, target);
+        }
+    });
 
     // Handle quit
     display.on_quit([&cameras, &cmd_server]() {

@@ -80,11 +80,26 @@ Options:
 - `-d, --debug` - Enable debug logging
 - `-H, --hidden` - Start with the window hidden (headless mode, control via socket)
 
+#### Keyboard Controls
+
+When the dashboard window has focus:
+
+| Key | Action |
+|-----|--------|
+| `1`–`9` | Focus a single camera (`1` = first camera), hiding the others |
+| `0` | Return to the overview (show all cameras) |
+| `r` | Toggle low/high resolution (sub/main stream) of the focused camera, or of all cameras in overview |
+
+An optional modifier can be required via the `hotkey_modifier` config field
+(e.g. `"ctrl"` makes the shortcuts CTRL+1 .. CTRL+0 / CTRL+R). Accepted values:
+`none` (default), `ctrl`, `alt`, `shift`, `super`.
+
 #### Configuration
 
 ```json
 {
   "columns": 2,
+  "hotkey_modifier": "ctrl",
   "control": {
     "unix": "/tmp/dash.sock",
     "tcp_port": 9100
@@ -119,6 +134,7 @@ Options:
 | Field | Description |
 |-------|-------------|
 | `columns` | Number of grid columns (default: 2) |
+| `hotkey_modifier` | Modifier required for keyboard shortcuts: `none`, `ctrl`, `alt`, `shift`, `super` (optional, default: none) |
 | `control.unix` | Unix domain socket path for runtime commands (optional) |
 | `control.tcp_port` | TCP port for runtime commands (optional) |
 | `cameras[].name` | Display name |
@@ -204,6 +220,13 @@ All commands also work via TCP: `echo '{"list": true}' | nc localhost 9100`
 mkdir build && cd build
 cmake ..
 make -j4
+```
+
+The documentation URL shown in `dashboard --help` is configurable at build time via
+the `HELP_URL` CMake variable (default: this repository):
+
+```bash
+cmake -DHELP_URL="https://example.com/my-docs" ..
 ```
 
 ## Dependencies

@@ -5,6 +5,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# URL shown in the command-line --help for further documentation.
+# Change here (or pass -DHELP_URL=... at configure time) before compilation.
+set(HELP_URL "https://github.com/HowardsPlayPen/bachuan"
+    CACHE STRING "Project help/documentation URL shown in --help output")
+
 # Find required packages
 find_package(PkgConfig REQUIRED)
 find_package(OpenSSL REQUIRED)
@@ -118,6 +123,8 @@ target_link_libraries(dashboard PRIVATE
     ${LIBJPEG_LIBRARIES}
     pthread
 )
+
+target_compile_definitions(dashboard PRIVATE HELP_URL="${HELP_URL}")
 
 target_compile_options(dashboard PRIVATE
     ${GTK3_CFLAGS_OTHER}

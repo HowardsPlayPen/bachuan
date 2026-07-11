@@ -46,6 +46,10 @@ struct DashboardConfig {
     std::vector<CameraConfig> cameras;
     int columns = 2;        // Grid columns
     ControlConfig control;
+
+    // Optional modifier key required for keyboard hotkeys (e.g. "ctrl" -> CTRL+1).
+    // "" or "none" means the digit keys work without a modifier.
+    std::string hotkey_modifier;  // "", "none", "ctrl", "alt", "shift", "super"
 };
 
 // Simple JSON parser for dashboard config
@@ -74,6 +78,9 @@ private:
         if (cols_pos != std::string::npos) {
             config.columns = parse_int(json, cols_pos);
         }
+
+        // Optional keyboard hotkey modifier (e.g. "ctrl" for CTRL+1..9)
+        config.hotkey_modifier = parse_string(json, "hotkey_modifier", "");
 
         // Find "cameras" array
         size_t cameras_pos = json.find("\"cameras\"");

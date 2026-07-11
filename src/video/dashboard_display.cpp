@@ -2,6 +2,7 @@
 #include "utils/logger.h"
 
 #include <cstring>
+#include <cctype>
 #include <algorithm>
 
 namespace baichuan {
@@ -116,6 +117,10 @@ bool DashboardDisplay::create(const std::string& title, const std::vector<Camera
 
     // Connect window close
     g_signal_connect(window_, "delete-event", G_CALLBACK(on_delete_event), this);
+
+    // Listen for keyboard hotkeys (1-9 focus a camera, 0 = overview, R = toggle resolution)
+    gtk_widget_add_events(window_, GDK_KEY_PRESS_MASK);
+    g_signal_connect(window_, "key-press-event", G_CALLBACK(on_key_press), this);
 
     // Show window
     gtk_widget_show_all(window_);
@@ -455,6 +460,88 @@ void DashboardDisplay::on_quit_clicked(GtkWidget* widget, gpointer user_data) {
     }
 
     gtk_main_quit();
+}
+
+// --- Keyboard hotkeys ---
+
+void DashboardDisplay::set_hotkey_modifier(const std::string& modifier) {
+    std::string m = modifier;
+    std::transform(m.begin(), m.end(), m.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+
+    if (m.empty() || m == "none") {
+        hotkey_modifier_mask_ = 0;
+    } else if (m == "ctrl" || m == "control") {
+        hotkey_modifier_mask_ = GDK_CONTROL_MASK;
+    } else if (m == "alt" || m == "mod1") {
+        hotkey_modifier_mask_ = GDK_MOD1_MASK;
+    } else if (m == "shift") {
+        hotkey_modifier_mask_ = GDK_SHIFT_MASK;
+    } else if (m == "super" || m == "win") {
+        hotkey_modifier_mask_ = GDK_SUPER_MASK;
+    } else {
+        LOG_WARN("Unknown hotkey modifier '{}', using none", modifier);
+        hotkey_modifier_mask_ = 0;
+    }
+}
+
+void DashboardDisplay::focus_pane(size_t index) {
+    if (index >= panes_.size()) return;
+    focused_pane_ = static_cast<int>(index);
+    show_only({index});
+}
+
+void DashboardDisplay::show_overview() {
+    focused_pane_ = -1;
+    show_all_panes();
+}
+
+gboolean DashboardDisplay::on_key_press(GtkWidget* widget, GdkEventKey* event, gpointer user_data) {
+    (void)widget;
+    DashboardDisplay* self = static_cast<DashboardDisplay*>(user_data);
+
+    // Only react when the required modifier (and no other) is held.
+    // Ignore Lock/Shift here except when Shift is the configured modifier.
+    guint mods = event->state & (GDK_CONTROL_MASK | GDK_MOD1_MASK | GDK_SUPER_MASK | GDK_SHIFT_MASK);
+    if (self->hotkey_modifier_mask_ != GDK_SHIFT_MASK) {
+        mods &= ~GDK_SHIFT_MASK;  // Shift not part of the chord — tolerate it
+    }
+    if (mods != self->hotkey_modifier_mask_) {
+        return FALSE;  // let other handlers process it
+    }
+
+    guint kv = event->keyval;
+
+    // Digit 0 (top row or keypad) -> overview
+    if (kv == GDK_KEY_0 || kv == GDK_KEY_KP_0) {
+        self->show_overview();
+        return TRUE;
+    }
+
+    // Digits 1-9 -> focus that camera (1 = pane 0)
+    int digit = -1;
+    if (kv >= GDK_KEY_1 && kv <= GDK_KEY_9) {
+        digit = static_cast<int>(kv - GDK_KEY_1) + 1;
+    } else if (kv >= GDK_KEY_KP_1 && kv <= GDK_KEY_KP_9) {
+        digit = static_cast<int>(kv - GDK_KEY_KP_1) + 1;
+    }
+    if (digit >= 1) {
+        size_t idx = static_cast<size_t>(digit - 1);
+        if (idx < self->panes_.size()) {
+            self->focus_pane(idx);
+        }
+        return TRUE;
+    }
+
+    // R -> toggle low/high resolution stream
+    if (kv == GDK_KEY_r || kv == GDK_KEY_R) {
+        if (self->resolution_callback_) {
+            self->resolution_callback_(self->focused_pane_);
+        }
+        return TRUE;
+    }
+
+    return FALSE;
 }
 
 } // namespace baichuan

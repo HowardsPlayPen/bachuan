@@ -17,6 +17,11 @@ namespace baichuan {
 // Callback for quit event
 using QuitCallback = std::function<void()>;
 
+// Callback for the "toggle resolution" hotkey.
+// Argument is the currently focused pane index, or -1 when in overview
+// (meaning: apply to all cameras).
+using ToggleResolutionCallback = std::function<void(int focused_index)>;
+
 // Single camera pane within the dashboard
 struct CameraPane {
     std::string name;
@@ -71,6 +76,20 @@ public:
     // Set quit callback
     void on_quit(QuitCallback cb) { quit_callback_ = std::move(cb); }
 
+    // Configure the modifier key required for keyboard hotkeys.
+    // Accepts "", "none", "ctrl"/"control", "alt", "shift", "super"/"win".
+    // Unknown values fall back to no modifier.
+    void set_hotkey_modifier(const std::string& modifier);
+
+    // Set the callback invoked when the resolution-toggle hotkey is pressed.
+    void on_toggle_resolution(ToggleResolutionCallback cb) { resolution_callback_ = std::move(cb); }
+
+    // Focus a single camera pane (hides the others). index must be < pane_count().
+    void focus_pane(size_t index);
+
+    // Return to the overview showing all panes.
+    void show_overview();
+
     // Get number of panes
     size_t pane_count() const { return panes_.size(); }
 
@@ -116,11 +135,17 @@ private:
     std::atomic<bool> quit_requested_{false};
     QuitCallback quit_callback_;
 
+    // Keyboard hotkey state
+    guint hotkey_modifier_mask_ = 0;   // required modifier mask (0 = none)
+    int focused_pane_ = -1;            // currently focused pane, -1 = overview
+    ToggleResolutionCallback resolution_callback_;
+
     // GTK callbacks
     static gboolean on_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data);
     static gboolean on_delete_event(GtkWidget* widget, GdkEvent* event, gpointer user_data);
     static void on_quit_clicked(GtkWidget* widget, gpointer user_data);
     static gboolean on_idle_update(gpointer user_data);
+    static gboolean on_key_press(GtkWidget* widget, GdkEventKey* event, gpointer user_data);
 
     void update_pane_surface(CameraPane* pane);
     static void draw_pane(CameraPane* pane, cairo_t* cr, int width, int height);
