@@ -1,6 +1,7 @@
 #pragma once
 
 #include "video/decoder.h"  // For DecodedFrame
+#include "utils/net_compat.h"
 #include <string>
 #include <vector>
 #include <thread>
@@ -62,7 +63,7 @@ private:
     std::string auth_header_;  // Base64 encoded credentials
     std::string boundary_;     // Multipart boundary string
 
-    int socket_fd_ = -1;
+    net::socket_t socket_fd_ = net::kInvalidSocket;
     int timeout_seconds_ = 10;
 
     std::thread receive_thread_;

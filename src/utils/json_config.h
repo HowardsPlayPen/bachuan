@@ -31,7 +31,8 @@ struct CameraConfig {
     uint8_t channel = 0;    // Channel ID
 
     // RTSP/MJPEG URL field
-    std::string url;        // Full URL (rtsp:// or http://)
+    std::string url;        // Full URL (rtsp:// or http://) - "main" stream
+    std::string url_sub;    // Optional secondary RTSP URL - "sub" stream (toggled with 'r')
     std::string transport = "tcp";  // tcp or udp (RTSP only)
 };
 
@@ -150,7 +151,13 @@ public:
         if (cam.type == CameraType::Rtsp || cam.type == CameraType::Mjpeg) {
             // RTSP/MJPEG camera - requires URL
             cam.url = parse_string(json, "url", "");
+            cam.url_sub = parse_string(json, "sub", "");
             cam.transport = parse_string(json, "transport", "tcp");
+            // Track which URL is active for the 'r' resolution toggle: "main" = url,
+            // "sub" = url_sub. Default to the sub (low-res) feed when one is
+            // configured, so the overview matrix is light on bandwidth/CPU; the
+            // 'r' key brings up the high-res main feed.
+            cam.stream = cam.url_sub.empty() ? "main" : "sub";
 
             if (cam.url.empty()) {
                 throw std::runtime_error("RTSP/MJPEG camera config missing 'url' field");

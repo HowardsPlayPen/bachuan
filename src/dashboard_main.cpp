@@ -4,10 +4,13 @@
 #include "video/decoder.h"
 #include "video/dashboard_display.h"
 #include "rtsp/rtsp_source.h"
+#include <sstream>
 #include "mjpeg/mjpeg_source.h"
 #include "control/command_server.h"
 #include "utils/logger.h"
 #include "utils/json_config.h"
+#include "utils/net_compat.h"
+#include "utils/onvif.h"
 
 #include <iostream>
 #include <string>
@@ -28,6 +31,130 @@ using namespace baichuan;
 #define HELP_URL "https://github.com/HowardsPlayPen/bachuan"
 #endif
 
+extern "C" {
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libavutil/dict.h>
+}
+
+// ---------------------------------------------------------------------------
+// Stream introspection & discovery (the in-app "Streams" panel).
+//
+// introspect_stream() opens an RTSP/HTTP URL with libavformat and returns a
+// one-line human summary of what it carries (codec / resolution / fps / audio).
+// It is a blocking network call and MUST be run off the GTK main thread.
+// ---------------------------------------------------------------------------
+static std::string introspect_stream(const std::string& url,
+                                     const std::string& transport,
+                                     int timeout_seconds = 4) {
+    AVFormatContext* fmt = avformat_alloc_context();
+    if (!fmt) return "probe error";
+
+    AVDictionary* opts = nullptr;
+    if (url.rfind("rtsp://", 0) == 0) {
+        av_dict_set(&opts, "rtsp_transport", transport.c_str(), 0);
+    }
+    char tbuf[32];
+    snprintf(tbuf, sizeof(tbuf), "%d", timeout_seconds * 1000000);
+    av_dict_set(&opts, "timeout", tbuf, 0);
+    av_dict_set(&opts, "stimeout", tbuf, 0);
+
+    int ret = avformat_open_input(&fmt, url.c_str(), nullptr, &opts);
+    av_dict_free(&opts);
+    if (ret < 0) {
+        char err[128];
+        av_strerror(ret, err, sizeof(err));
+        // Normalise the two cases the UI cares about most.
+        std::string e = err;
+        if (e.find("401") != std::string::npos || e.find("Unauthorized") != std::string::npos)
+            return "unauthorized (bad credentials)";
+        if (e.find("404") != std::string::npos || e.find("Not Found") != std::string::npos)
+            return "not found (wrong path)";
+        return std::string("unreachable: ") + err;
+    }
+
+    if (avformat_find_stream_info(fmt, nullptr) < 0) {
+        avformat_close_input(&fmt);
+        return "opened, but no stream info";
+    }
+
+    std::string vsum, asum;
+    for (unsigned i = 0; i < fmt->nb_streams; i++) {
+        AVCodecParameters* cp = fmt->streams[i]->codecpar;
+        const char* name = avcodec_get_name(cp->codec_id);
+        if (cp->codec_type == AVMEDIA_TYPE_VIDEO && vsum.empty()) {
+            int fps = 0;
+            AVRational fr = fmt->streams[i]->avg_frame_rate;
+            if (fr.den <= 0 || fr.num <= 0) fr = fmt->streams[i]->r_frame_rate;
+            if (fr.den > 0) fps = fr.num / fr.den;
+            char buf[96];
+            snprintf(buf, sizeof(buf), "%s %dx%d @%dfps",
+                     name, cp->width, cp->height, fps);
+            vsum = buf;
+        } else if (cp->codec_type == AVMEDIA_TYPE_AUDIO && asum.empty()) {
+            asum = std::string(" + ") + name;
+        }
+    }
+    avformat_close_input(&fmt);
+    if (vsum.empty()) return "no video stream";
+    return vsum + asum;
+}
+
+// Split an rtsp:// URL into its base (scheme + optional creds + host + port)
+// and path, so discovery can swap the path while keeping credentials.
+// Returns false if url is not rtsp://.
+static bool split_rtsp_url(const std::string& url, std::string& base_out) {
+    if (url.rfind("rtsp://", 0) != 0) return false;
+    size_t host_start = 7;  // after "rtsp://"
+    size_t slash = url.find('/', host_start);
+    base_out = (slash == std::string::npos) ? url : url.substr(0, slash);
+    return true;
+}
+
+// Parse rtsp://[user:pass@]host[:port]/... into its parts. Returns false if not rtsp.
+static bool parse_rtsp_url(const std::string& url, std::string& user,
+                           std::string& pass, std::string& host, int& port) {
+    if (url.rfind("rtsp://", 0) != 0) return false;
+    std::string rest = url.substr(7);
+    size_t slash = rest.find('/');
+    std::string authority = (slash == std::string::npos) ? rest : rest.substr(0, slash);
+    size_t at = authority.find('@');
+    std::string hostport = authority;
+    user.clear(); pass.clear();
+    if (at != std::string::npos) {
+        std::string creds = authority.substr(0, at);
+        hostport = authority.substr(at + 1);
+        size_t colon = creds.find(':');
+        user = (colon == std::string::npos) ? creds : creds.substr(0, colon);
+        pass = (colon == std::string::npos) ? ""    : creds.substr(colon + 1);
+    }
+    size_t hc = hostport.find(':');
+    host = (hc == std::string::npos) ? hostport : hostport.substr(0, hc);
+    port = (hc == std::string::npos) ? 554 : std::atoi(hostport.c_str() + hc + 1);
+    return !host.empty();
+}
+
+// Common vendor RTSP stream paths, ordered most-likely-first. Used by the
+// on-demand "Discover" action. Intentionally short to limit request volume
+// (some cameras rate-limit / lock out aggressive probing).
+static const std::vector<std::string>& discovery_paths() {
+    static const std::vector<std::string> paths = {
+        "/Streaming/Channels/101",           // Hikvision/EZVIZ main
+        "/Streaming/Channels/102",           // Hikvision/EZVIZ sub
+        "/h264/ch1/main/av_stream",          // EZVIZ alias (may be HEVC)
+        "/h264/ch1/sub/av_stream",
+        "/cam/realmonitor?channel=1&subtype=0",  // Dahua main
+        "/cam/realmonitor?channel=1&subtype=1",  // Dahua sub
+        "/live/ch0",                         // generic
+        "/live/ch1",
+        "/stream1",
+        "/stream2",
+        "/h264Preview_01_main",              // Reolink main
+        "/h264Preview_01_sub",               // Reolink sub
+    };
+    return paths;
+}
+
 // Global flag for signal handling
 static std::atomic<bool> g_quit{false};
 
@@ -37,10 +164,22 @@ void signal_handler(int signum) {
     g_quit.store(true);
 }
 
-// Default config path follows the XDG Base Directory spec:
-//   $XDG_CONFIG_HOME/baichuan/config.json, falling back to
-//   $HOME/.config/baichuan/config.json.
+// Default config path.
+//   Windows: %APPDATA%\baichuan\config.json
+//   POSIX:   $XDG_CONFIG_HOME/baichuan/config.json, falling back to
+//            $HOME/.config/baichuan/config.json (XDG Base Directory spec).
 std::string default_config_path() {
+#ifdef _WIN32
+    const char* appdata = std::getenv("APPDATA");
+    if (appdata && *appdata) {
+        return std::string(appdata) + "\\baichuan\\config.json";
+    }
+    const char* userprofile = std::getenv("USERPROFILE");
+    if (userprofile && *userprofile) {
+        return std::string(userprofile) + "\\.config\\baichuan\\config.json";
+    }
+    return {};
+#else
     const char* xdg = std::getenv("XDG_CONFIG_HOME");
     if (xdg && *xdg) {
         return std::string(xdg) + "/baichuan/config.json";
@@ -50,75 +189,93 @@ std::string default_config_path() {
         return std::string(home) + "/.config/baichuan/config.json";
     }
     return {};
+#endif
+}
+
+// Build the full help/usage text. Shared by --help (stdout) and the in-app Help
+// dialog so the two never drift.
+std::string usage_text(const char* program) {
+    std::ostringstream o;
+    o << "Usage: " << program << " [-c <config.json>] [options]\n"
+      << "\n"
+      << "Options:\n"
+      << "  -c, --config <file>   JSON configuration file\n"
+      << "                        (default: $XDG_CONFIG_HOME/baichuan/config.json,\n"
+      << "                         or ~/.config/baichuan/config.json)\n"
+      << "  -d, --debug           Enable debug logging\n"
+      << "  -H, --hidden          Start with window hidden (headless mode)\n"
+      << "  --help                Show this help message\n"
+      << "\n"
+      << "Keyboard controls (when the dashboard window has focus):\n"
+      << "  1-9                   Focus a single camera (1 = first camera)\n"
+      << "  0                     Return to the overview (show all cameras)\n"
+      << "  i                     Show the stream-info panel for the focused camera\n"
+      << "                        (codec/resolution/fps; for RTSP cameras a Discover\n"
+      << "                        button probes common paths and an ONVIF button queries\n"
+      << "                        the camera's advertised streams; baichuan cameras list\n"
+      << "                        their available main/sub/extern feeds)\n"
+      << "  r                     Toggle low/high resolution (sub/main stream)\n"
+      << "                        of the focused camera, or all in overview.\n"
+      << "                        Baichuan cameras switch the protocol stream; RTSP\n"
+      << "                        cameras switch between their \"url\" and \"sub\" URLs.\n"
+      << "  An optional modifier can be required via \"hotkey_modifier\" in the\n"
+      << "  config (e.g. \"ctrl\" makes the shortcuts CTRL+1 .. CTRL+0 / CTRL+R).\n"
+      << "\n"
+      << "Configuration file format (Baichuan camera):\n"
+      << "  {\n"
+      << "    \"columns\": 2,\n"
+      << "    \"cameras\": [\n"
+      << "      {\n"
+      << "        \"name\": \"Front Door\",\n"
+      << "        \"type\": \"baichuan\",\n"
+      << "        \"host\": \"192.168.1.100\",\n"
+      << "        \"port\": 9000,\n"
+      << "        \"username\": \"admin\",\n"
+      << "        \"password\": \"password123\",\n"
+      << "        \"encryption\": \"aes\",\n"
+      << "        \"stream\": \"main\",\n"
+      << "        \"channel\": 0\n"
+      << "      }\n"
+      << "    ]\n"
+      << "  }\n"
+      << "\n"
+      << "Configuration file format (RTSP camera):\n"
+      << "  {\n"
+      << "    \"cameras\": [\n"
+      << "      {\n"
+      << "        \"name\": \"Back Yard\",\n"
+      << "        \"type\": \"rtsp\",\n"
+      << "        \"url\": \"rtsp://admin:password@192.168.1.101:554/main\",\n"
+      << "        \"sub\": \"rtsp://admin:password@192.168.1.101:554/sub\",\n"
+      << "        \"transport\": \"tcp\"\n"
+      << "      }\n"
+      << "    ]\n"
+      << "  }\n"
+      << "  (\"sub\" is optional; when present, the overview matrix shows the sub\n"
+      << "   (low-res) feed by default and the 'r' key toggles it with the main \"url\".)\n"
+      << "\n"
+      << "Configuration file format (MJPEG camera):\n"
+      << "  {\n"
+      << "    \"cameras\": [\n"
+      << "      {\n"
+      << "        \"name\": \"Garage\",\n"
+      << "        \"type\": \"mjpeg\",\n"
+      << "        \"url\": \"http://admin:password@192.168.1.102/mjpeg\"\n"
+      << "      }\n"
+      << "    ]\n"
+      << "  }\n"
+      << "\n"
+      << "Example:\n"
+      << "  " << program << " -c cameras.json\n"
+      << "\n"
+      << "For more help and documentation, see:\n"
+      << "  " << HELP_URL << "\n";
+    return o.str();
 }
 
 void print_usage(const char* program) {
-    std::cerr << "Usage: " << program << " [-c <config.json>] [options]\n"
-              << "\n"
-              << "Options:\n"
-              << "  -c, --config <file>   JSON configuration file\n"
-              << "                        (default: $XDG_CONFIG_HOME/baichuan/config.json,\n"
-              << "                         or ~/.config/baichuan/config.json)\n"
-              << "  -d, --debug           Enable debug logging\n"
-              << "  -H, --hidden          Start with window hidden (headless mode)\n"
-              << "  --help                Show this help message\n"
-              << "\n"
-              << "Keyboard controls (when the dashboard window has focus):\n"
-              << "  1-9                   Focus a single camera (1 = first camera)\n"
-              << "  0                     Return to the overview (show all cameras)\n"
-              << "  r                     Toggle low/high resolution (sub/main stream)\n"
-              << "                        of the focused camera, or all in overview\n"
-              << "  An optional modifier can be required via \"hotkey_modifier\" in the\n"
-              << "  config (e.g. \"ctrl\" makes the shortcuts CTRL+1 .. CTRL+0 / CTRL+R).\n"
-              << "\n"
-              << "Configuration file format (Baichuan camera):\n"
-              << "  {\n"
-              << "    \"columns\": 2,\n"
-              << "    \"cameras\": [\n"
-              << "      {\n"
-              << "        \"name\": \"Front Door\",\n"
-              << "        \"type\": \"baichuan\",\n"
-              << "        \"host\": \"192.168.1.100\",\n"
-              << "        \"port\": 9000,\n"
-              << "        \"username\": \"admin\",\n"
-              << "        \"password\": \"password123\",\n"
-              << "        \"encryption\": \"aes\",\n"
-              << "        \"stream\": \"main\",\n"
-              << "        \"channel\": 0\n"
-              << "      }\n"
-              << "    ]\n"
-              << "  }\n"
-              << "\n"
-              << "Configuration file format (RTSP camera):\n"
-              << "  {\n"
-              << "    \"cameras\": [\n"
-              << "      {\n"
-              << "        \"name\": \"Back Yard\",\n"
-              << "        \"type\": \"rtsp\",\n"
-              << "        \"url\": \"rtsp://admin:password@192.168.1.101:554/stream\",\n"
-              << "        \"transport\": \"tcp\"\n"
-              << "      }\n"
-              << "    ]\n"
-              << "  }\n"
-              << "\n"
-              << "Configuration file format (MJPEG camera):\n"
-              << "  {\n"
-              << "    \"cameras\": [\n"
-              << "      {\n"
-              << "        \"name\": \"Garage\",\n"
-              << "        \"type\": \"mjpeg\",\n"
-              << "        \"url\": \"http://admin:password@192.168.1.102/mjpeg\"\n"
-              << "      }\n"
-              << "    ]\n"
-              << "  }\n"
-              << "\n"
-              << "Example:\n"
-              << "  " << program << " -c cameras.json\n"
-              << "\n"
-              << "For more help and documentation, see:\n"
-              << "  " << HELP_URL << "\n";
+    std::cerr << usage_text(program);
 }
-
 // Per-camera context
 struct CameraContext {
     size_t index;
@@ -138,6 +295,12 @@ struct CameraContext {
     // Stream switching: protected by mutex since std::string isn't atomic
     std::mutex stream_mutex;
     std::string pending_stream;  // Empty means no change requested
+
+    // Last-known live resolution of the *active* stream (0 until first info).
+    // Populated by the RTSP/baichuan info callbacks; read by the stream-info panel.
+    std::atomic<int> live_width{0};
+    std::atomic<int> live_height{0};
+    std::atomic<int> live_fps{0};
 };
 
 MaxEncryption string_to_encryption(const std::string& enc) {
@@ -152,9 +315,24 @@ void rtsp_camera_worker(CameraContext* ctx, DashboardDisplay* display) {
 
     display->set_status(ctx->index, "Connecting RTSP...");
 
+    // Apply any pending stream switch (the 'r' hotkey) before connecting.
+    {
+        std::lock_guard<std::mutex> lock(ctx->stream_mutex);
+        if (!ctx->pending_stream.empty()) {
+            ctx->config.stream = ctx->pending_stream;
+            ctx->pending_stream.clear();
+        }
+    }
+
+    // Select the URL for the active stream: "sub" uses url_sub when configured,
+    // everything else uses the primary url.
+    const bool want_sub = (ctx->config.stream == "sub") && !ctx->config.url_sub.empty();
+    const std::string& active_url = want_sub ? ctx->config.url_sub : ctx->config.url;
+    LOG_INFO("Camera {} (RTSP): using {} stream", ctx->index, want_sub ? "sub" : "main");
+
     // Create RTSP source
     ctx->rtsp_source = std::make_unique<RtspSource>();
-    ctx->rtsp_source->set_url(ctx->config.url);
+    ctx->rtsp_source->set_url(active_url);
     ctx->rtsp_source->set_transport(ctx->config.transport);
 
     if (!ctx->rtsp_source->connect()) {
@@ -171,6 +349,9 @@ void rtsp_camera_worker(CameraContext* ctx, DashboardDisplay* display) {
     // Handle stream info
     ctx->rtsp_source->on_info([ctx](int width, int height, int fps) {
         LOG_INFO("Camera {} (RTSP): Stream {}x{} @ {} fps", ctx->index, width, height, fps);
+        ctx->live_width.store(width);
+        ctx->live_height.store(height);
+        ctx->live_fps.store(fps);
     });
 
     // Handle video frames
@@ -206,8 +387,12 @@ void rtsp_camera_worker(CameraContext* ctx, DashboardDisplay* display) {
         return;
     }
 
-    // Wait until quit or pause requested
+    // Wait until quit, pause, or a stream switch is requested.
     while (ctx->running.load() && !g_quit.load() && !ctx->paused.load()) {
+        {
+            std::lock_guard<std::mutex> lock(ctx->stream_mutex);
+            if (!ctx->pending_stream.empty()) break;  // Stream switch requested
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
@@ -339,6 +524,9 @@ void baichuan_camera_worker(CameraContext* ctx, DashboardDisplay* display) {
     ctx->stream->on_stream_info([ctx](const BcMediaInfo& info) {
         LOG_INFO("Camera {}: Stream {}x{} @ {} fps",
                  ctx->index, info.video_width, info.video_height, info.fps);
+        ctx->live_width.store(static_cast<int>(info.video_width));
+        ctx->live_height.store(static_cast<int>(info.video_height));
+        ctx->live_fps.store(static_cast<int>(info.fps));
     });
 
     // Handle video frames
@@ -362,6 +550,12 @@ void baichuan_camera_worker(CameraContext* ctx, DashboardDisplay* display) {
 
         // Decode and display
         auto decode_callback = [ctx, display](const DecodedFrame& decoded) {
+            // The decoded frame carries the true resolution; the protocol's
+            // BcMediaInfo often reports 0, so trust the frame for the stream-info panel.
+            if (decoded.width > 0 && decoded.height > 0) {
+                ctx->live_width.store(decoded.width);
+                ctx->live_height.store(decoded.height);
+            }
             display->update_frame(ctx->index, decoded);
         };
 
@@ -461,6 +655,13 @@ void camera_worker(CameraContext* ctx, DashboardDisplay* display) {
 }
 
 int main(int argc, char* argv[]) {
+    // Initialize the socket subsystem (WSAStartup on Windows; no-op on POSIX).
+    net::Init net_guard;
+    if (!net_guard.ok) {
+        std::cerr << "Error: failed to initialize networking\n";
+        return 1;
+    }
+
     std::string config_file;
     bool debug = false;
     bool start_hidden = false;
@@ -496,7 +697,7 @@ int main(int argc, char* argv[]) {
     if (config_file.empty()) {
         config_file = default_config_path();
         if (config_file.empty()) {
-            std::cerr << "Error: No config file specified and HOME is unset\n\n";
+            std::cerr << "Error: No config file specified and no default location available\n\n";
             print_usage(argv[0]);
             return 1;
         }
@@ -541,6 +742,9 @@ int main(int argc, char* argv[]) {
         LOG_ERROR("Failed to create dashboard");
         return 1;
     }
+
+    // Feed the same text as --help into the in-app Help dialog.
+    display.set_help_text(usage_text(argv[0]));
 
     // Hide window if --hidden flag was passed
     if (start_hidden) {
@@ -852,10 +1056,15 @@ int main(int argc, char* argv[]) {
     // Configure keyboard hotkeys: optional modifier + resolution toggle
     display.set_hotkey_modifier(config.hotkey_modifier);
     display.on_toggle_resolution([&cameras](int focused_index) {
-        // Toggle each target baichuan camera between its low (sub) and high (main)
-        // resolution stream. focused_index == -1 means "all cameras".
+        // Toggle each target camera between its low (sub) and high (main) resolution
+        // stream. focused_index == -1 means "all cameras". Baichuan cameras switch the
+        // protocol stream; RTSP cameras switch between their "url" and "sub" URLs, and
+        // are only eligible when a sub URL is configured.
         for (auto& ctx : cameras) {
-            if (ctx->config.type != CameraType::Baichuan) continue;
+            const bool is_baichuan = ctx->config.type == CameraType::Baichuan;
+            const bool is_rtsp_dual =
+                ctx->config.type == CameraType::Rtsp && !ctx->config.url_sub.empty();
+            if (!is_baichuan && !is_rtsp_dual) continue;
             if (focused_index >= 0 && ctx->index != static_cast<size_t>(focused_index)) continue;
 
             std::string target;
@@ -870,6 +1079,93 @@ int main(int argc, char* argv[]) {
             ctx->running.store(false);
             LOG_INFO("Camera {}: Toggling resolution to {} stream", ctx->index, target);
         }
+    });
+
+    // Stream-info panel ('i' on a focused pane): introspect configured streams (B)...
+    display.on_probe_streams([&cameras](int idx) -> std::vector<StreamEntry> {
+        std::vector<StreamEntry> out;
+        if (idx < 0 || static_cast<size_t>(idx) >= cameras.size()) return out;
+        const auto& cfg = cameras[idx]->config;
+        if (cfg.type == CameraType::Rtsp) {
+            out.push_back({"main (configured)", cfg.url,
+                           introspect_stream(cfg.url, cfg.transport)});
+            if (!cfg.url_sub.empty()) {
+                out.push_back({"sub (configured)", cfg.url_sub,
+                               introspect_stream(cfg.url_sub, cfg.transport)});
+            }
+        } else if (cfg.type == CameraType::Mjpeg) {
+            out.push_back({"stream (configured)", cfg.url,
+                           introspect_stream(cfg.url, "tcp")});
+        } else {  // Baichuan: list the available protocol feeds (main/sub/extern),
+                  // marking the active one and showing its live resolution.
+            int w = cameras[idx]->live_width.load();
+            int h = cameras[idx]->live_height.load();
+            int f = cameras[idx]->live_fps.load();
+            char live[64] = "connecting... (resolution not yet available)";
+            if (w > 0 && h > 0) {
+                if (f > 0) snprintf(live, sizeof(live), "%dx%d @%dfps", w, h, f);
+                else       snprintf(live, sizeof(live), "%dx%d", w, h);
+            }
+            const char* feeds[] = {"main", "sub", "extern"};
+            for (const char* feed : feeds) {
+                bool active = (cfg.stream == feed);
+                std::string label = std::string(feed) + " stream" +
+                                    (active ? "  [active]" : "");
+                std::string endpoint = cfg.host + ":" + std::to_string(cfg.port) +
+                                       " (channel " + std::to_string(cfg.channel) + ", " + feed + ")";
+                std::string summary = active ? std::string(live)
+                                             : "select with 'r' to view resolution";
+                out.push_back({label, endpoint, summary});
+            }
+        }
+        return out;
+    });
+
+    // ...and on-demand discovery of common RTSP paths (C).
+    display.on_discover_streams([&cameras](int idx) -> std::vector<StreamEntry> {
+        std::vector<StreamEntry> out;
+        if (idx < 0 || static_cast<size_t>(idx) >= cameras.size()) return out;
+        const auto& cfg = cameras[idx]->config;
+        std::string base;
+        if (cfg.type != CameraType::Rtsp || !split_rtsp_url(cfg.url, base)) {
+            return out;  // discovery only meaningful for RTSP cameras
+        }
+        for (const auto& path : discovery_paths()) {
+            std::string url = base + path;
+            if (url == cfg.url || url == cfg.url_sub) continue;  // already listed as configured
+            std::string summary = introspect_stream(url, cfg.transport, 3);
+            // Keep only paths that actually resolved to a video stream.
+            if (summary.find("fps") != std::string::npos) {
+                out.push_back({path, url, summary});
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));  // gentle: avoid camera lockout
+        }
+        return out;
+    });
+
+    // ...and ONVIF discovery (D): ask the camera what it actually advertises.
+    display.on_onvif_streams([&cameras](int idx) -> std::vector<StreamEntry> {
+        std::vector<StreamEntry> out;
+        if (idx < 0 || static_cast<size_t>(idx) >= cameras.size()) return out;
+        const auto& cfg = cameras[idx]->config;
+        std::string user, pass, host; int rtsp_port = 554;
+        if (cfg.type != CameraType::Rtsp || !parse_rtsp_url(cfg.url, user, pass, host, rtsp_port)) {
+            out.push_back({"ONVIF", "", "only available for RTSP cameras"});
+            return out;
+        }
+        // ONVIF HTTP service is conventionally on port 80.
+        OnvifResult r = onvif_discover(host, 80, user, pass);
+        if (!r.ok) {
+            out.push_back({"ONVIF query failed", "", r.error});
+            return out;
+        }
+        for (const auto& s : r.streams) {
+            std::string summary;
+            if (!s.encoding.empty()) summary += s.encoding + " ";
+            summary += s.resolution.empty() ? "(resolution not reported)" : s.resolution;
+            out.push_back({s.name, s.uri, summary});
+        }
+        return out;
     });
 
     // Handle quit

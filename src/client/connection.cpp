@@ -1,14 +1,7 @@
 #include "client/connection.h"
 #include "utils/logger.h"
+#include "utils/net_compat.h"
 
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <arpa/inet.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <poll.h>
-#include <cerrno>
 #include <cstring>
 
 namespace baichuan {
@@ -22,28 +15,30 @@ Connection::~Connection() {
 }
 
 bool Connection::connect(const std::string& host, uint16_t port) {
-    if (socket_fd_ >= 0) {
+    if (socket_fd_ != net::kInvalidSocket) {
         disconnect();
     }
 
     LOG_INFO("Connecting to {}:{}", host, port);
 
     socket_fd_ = socket(AF_INET, SOCK_STREAM, 0);
-    if (socket_fd_ < 0) {
-        LOG_ERROR("Failed to create socket: {}", strerror(errno));
+    if (socket_fd_ == net::kInvalidSocket) {
+        LOG_ERROR("Failed to create socket: {}", net::error_string(net::last_error()));
         return false;
     }
 
     // Set TCP_NODELAY to disable Nagle's algorithm
     int flag = 1;
-    if (setsockopt(socket_fd_, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag)) < 0) {
-        LOG_WARN("Failed to set TCP_NODELAY: {}", strerror(errno));
+    if (setsockopt(socket_fd_, IPPROTO_TCP, TCP_NODELAY,
+                   reinterpret_cast<const char*>(&flag), sizeof(flag)) < 0) {
+        LOG_WARN("Failed to set TCP_NODELAY: {}", net::error_string(net::last_error()));
     }
 
     // Set socket receive buffer
     int recv_buf_size = 256 * 1024;
-    if (setsockopt(socket_fd_, SOL_SOCKET, SO_RCVBUF, &recv_buf_size, sizeof(recv_buf_size)) < 0) {
-        LOG_WARN("Failed to set SO_RCVBUF: {}", strerror(errno));
+    if (setsockopt(socket_fd_, SOL_SOCKET, SO_RCVBUF,
+                   reinterpret_cast<const char*>(&recv_buf_size), sizeof(recv_buf_size)) < 0) {
+        LOG_WARN("Failed to set SO_RCVBUF: {}", net::error_string(net::last_error()));
     }
 
     struct sockaddr_in addr;
@@ -53,49 +48,46 @@ bool Connection::connect(const std::string& host, uint16_t port) {
 
     if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) <= 0) {
         LOG_ERROR("Invalid address: {}", host);
-        close(socket_fd_);
-        socket_fd_ = -1;
+        net::close_socket(socket_fd_);
+        socket_fd_ = net::kInvalidSocket;
         return false;
     }
 
     // Set non-blocking for connect with timeout
-    int flags = fcntl(socket_fd_, F_GETFL, 0);
-    fcntl(socket_fd_, F_SETFL, flags | O_NONBLOCK);
+    net::set_nonblocking(socket_fd_, true);
 
     int result = ::connect(socket_fd_, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
-    if (result < 0 && errno != EINPROGRESS) {
-        LOG_ERROR("Failed to connect: {}", strerror(errno));
-        close(socket_fd_);
-        socket_fd_ = -1;
+    if (result < 0 && !net::in_progress(net::last_error())) {
+        LOG_ERROR("Failed to connect: {}", net::error_string(net::last_error()));
+        net::close_socket(socket_fd_);
+        socket_fd_ = net::kInvalidSocket;
         return false;
     }
 
-    // Wait for connection with timeout
-    struct pollfd pfd;
-    pfd.fd = socket_fd_;
-    pfd.events = POLLOUT;
-    pfd.revents = 0;
-
-    result = poll(&pfd, 1, 10000); // 10 second timeout
+    // Wait for connection with timeout. net::wait_connect uses poll() on POSIX and
+    // select() on Windows -- WSAPoll never signals a failed connect, which would
+    // stall a refused connection for the full timeout.
+    result = net::wait_connect(socket_fd_, 10000); // 10 second timeout
     if (result <= 0) {
         LOG_ERROR("Connection timeout or error");
-        close(socket_fd_);
-        socket_fd_ = -1;
+        net::close_socket(socket_fd_);
+        socket_fd_ = net::kInvalidSocket;
         return false;
     }
 
     // Check for connection error
     int error = 0;
     socklen_t len = sizeof(error);
-    if (getsockopt(socket_fd_, SOL_SOCKET, SO_ERROR, &error, &len) < 0 || error != 0) {
-        LOG_ERROR("Connection failed: {}", error != 0 ? strerror(error) : "getsockopt error");
-        close(socket_fd_);
-        socket_fd_ = -1;
+    if (getsockopt(socket_fd_, SOL_SOCKET, SO_ERROR,
+                   reinterpret_cast<char*>(&error), &len) < 0 || error != 0) {
+        LOG_ERROR("Connection failed: {}", error != 0 ? net::error_string(error) : "getsockopt error");
+        net::close_socket(socket_fd_);
+        socket_fd_ = net::kInvalidSocket;
         return false;
     }
 
     // Set back to blocking mode
-    fcntl(socket_fd_, F_SETFL, flags);
+    net::set_nonblocking(socket_fd_, false);
 
     host_ = host;
     port_ = port;
@@ -105,10 +97,10 @@ bool Connection::connect(const std::string& host, uint16_t port) {
 }
 
 void Connection::disconnect() {
-    if (socket_fd_ >= 0) {
+    if (socket_fd_ != net::kInvalidSocket) {
         LOG_INFO("Disconnecting from {}:{}", host_, port_);
-        close(socket_fd_);
-        socket_fd_ = -1;
+        net::close_socket(socket_fd_);
+        socket_fd_ = net::kInvalidSocket;
     }
     recv_buffer_.clear();
     send_offset_ = 0;
@@ -118,7 +110,7 @@ void Connection::disconnect() {
 bool Connection::send_message(const BcMessage& msg) {
     std::lock_guard<std::mutex> lock(send_mutex_);
 
-    if (socket_fd_ < 0) {
+    if (socket_fd_ == net::kInvalidSocket) {
         LOG_ERROR("Not connected");
         return false;
     }
@@ -155,7 +147,7 @@ bool Connection::send_message(const BcMessage& msg) {
 std::optional<BcMessage> Connection::receive_message(int timeout_ms) {
     std::lock_guard<std::mutex> lock(recv_mutex_);
 
-    if (socket_fd_ < 0) {
+    if (socket_fd_ == net::kInvalidSocket) {
         LOG_ERROR("Not connected");
         return std::nullopt;
     }
@@ -167,12 +159,12 @@ std::optional<BcMessage> Connection::receive_message(int timeout_ms) {
         }
 
         uint8_t temp[1024];
-        ssize_t n = recv(socket_fd_, temp, sizeof(temp), 0);
+        int n = recv(socket_fd_, temp, sizeof(temp), 0);
         if (n <= 0) {
             if (n == 0) {
                 LOG_ERROR("Connection closed by peer");
             } else {
-                LOG_ERROR("Receive error: {}", strerror(errno));
+                LOG_ERROR("Receive error: {}", net::error_string(net::last_error()));
             }
             disconnect();
             return std::nullopt;
@@ -198,12 +190,12 @@ std::optional<BcMessage> Connection::receive_message(int timeout_ms) {
         }
 
         uint8_t temp[4096];
-        ssize_t n = recv(socket_fd_, temp, sizeof(temp), 0);
+        int n = recv(socket_fd_, temp, sizeof(temp), 0);
         if (n <= 0) {
             if (n == 0) {
                 LOG_ERROR("Connection closed by peer");
             } else {
-                LOG_ERROR("Receive error: {}", strerror(errno));
+                LOG_ERROR("Receive error: {}", net::error_string(net::last_error()));
             }
             disconnect();
             return std::nullopt;
@@ -353,9 +345,9 @@ std::optional<BcMessage> Connection::receive_message(int timeout_ms) {
 bool Connection::send_raw(const uint8_t* data, size_t len) {
     size_t sent = 0;
     while (sent < len) {
-        ssize_t n = send(socket_fd_, data + sent, len - sent, MSG_NOSIGNAL);
+        int n = send(socket_fd_, data + sent, len - sent, MSG_NOSIGNAL);
         if (n < 0) {
-            LOG_ERROR("Send error: {}", strerror(errno));
+            LOG_ERROR("Send error: {}", net::error_string(net::last_error()));
             return false;
         }
         sent += n;
@@ -370,12 +362,12 @@ bool Connection::recv_raw(uint8_t* data, size_t len, int timeout_ms) {
             return false;
         }
 
-        ssize_t n = recv(socket_fd_, data + received, len - received, 0);
+        int n = recv(socket_fd_, data + received, len - received, 0);
         if (n <= 0) {
             if (n == 0) {
                 LOG_ERROR("Connection closed by peer");
             } else {
-                LOG_ERROR("Receive error: {}", strerror(errno));
+                LOG_ERROR("Receive error: {}", net::error_string(net::last_error()));
             }
             return false;
         }
@@ -389,15 +381,14 @@ bool Connection::wait_for_data(int timeout_ms) {
         return true; // No timeout, assume data will arrive
     }
 
-    struct pollfd pfd;
+    net::pollfd_t pfd;
     pfd.fd = socket_fd_;
     pfd.events = POLLIN;
     pfd.revents = 0;
 
-    int result = poll(&pfd, 1, timeout_ms);
+    int result = net::poll_sockets(&pfd, 1, timeout_ms);
     if (result < 0) {
-        if (errno == EINTR) return false; // Interrupted, treat as timeout
-        LOG_ERROR("Poll error: {}", strerror(errno));
+        LOG_ERROR("Poll error: {}", net::error_string(net::last_error()));
         disconnect();
         return false;
     }

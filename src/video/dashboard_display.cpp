@@ -4,6 +4,11 @@
 #include <cstring>
 #include <cctype>
 #include <algorithm>
+#include <thread>
+#include <memory>
+#include <atomic>
+#include <mutex>
+#include <vector>
 
 namespace baichuan {
 
@@ -28,6 +33,29 @@ bool DashboardDisplay::create(const std::string& title, const std::vector<Camera
     int menu_width = 120;
     int window_width = menu_width + (pane_width * columns);
     int window_height = pane_height * rows;
+
+    // Clamp the default size to the monitor work area so the window (and its
+    // bottom controls like Quit) always fit on screen. Without this, a tall grid
+    // pushes the menu's bottom buttons off the screen edge. The grid panes expand,
+    // so they simply render a little smaller. Leave headroom for the title bar.
+    if (GdkDisplay* disp = gdk_display_get_default()) {
+        // Clamp to the SMALLEST monitor's work area: the WM may open the window on
+        // any monitor, so fitting the smallest guarantees the bottom controls are
+        // always on screen (multi-monitor setups can mix, e.g. 2160p + 1080p).
+        int max_w = 0, max_h = 0;
+        int n = gdk_display_get_n_monitors(disp);
+        for (int i = 0; i < n; i++) {
+            GdkMonitor* mon = gdk_display_get_monitor(disp, i);
+            if (!mon) continue;
+            GdkRectangle area;
+            gdk_monitor_get_workarea(mon, &area);
+            int avail_h = area.height - 80;  // room for the title bar / decorations
+            if (max_w == 0 || area.width < max_w) max_w = area.width;
+            if (max_h == 0 || avail_h    < max_h) max_h = avail_h;
+        }
+        if (max_w > 0 && window_width  > max_w) window_width  = max_w;
+        if (max_h > 0 && window_height > max_h) window_height = max_h;
+    }
 
     // Create main window
     window_ = gtk_window_new(GTK_WINDOW_TOPLEVEL);
@@ -70,10 +98,14 @@ bool DashboardDisplay::create(const std::string& title, const std::vector<Camera
     GtkWidget* count_label = gtk_label_new(count_text);
     gtk_box_pack_start(GTK_BOX(menu_box_), count_label, FALSE, FALSE, 5);
 
-    // Add Quit button at bottom
+    // Add Quit button at bottom, then Help just above it (pack_end stacks upward).
     GtkWidget* quit_button = gtk_button_new_with_label("Quit");
     gtk_box_pack_end(GTK_BOX(menu_box_), quit_button, FALSE, FALSE, 0);
     g_signal_connect(quit_button, "clicked", G_CALLBACK(on_quit_clicked), this);
+
+    GtkWidget* help_button = gtk_button_new_with_label("Help");
+    gtk_box_pack_end(GTK_BOX(menu_box_), help_button, FALSE, FALSE, 0);
+    g_signal_connect(help_button, "clicked", G_CALLBACK(on_help_clicked), this);
 
     // Create grid for camera panes
     grid_ = gtk_grid_new();
@@ -90,14 +122,17 @@ bool DashboardDisplay::create(const std::string& title, const std::vector<Camera
         auto pane = std::make_unique<CameraPane>();
         pane->name = cameras[i].name.empty() ? cameras[i].host : cameras[i].name;
         pane->status = "Connecting...";
+        pane->type = cameras[i].type;
 
         // Create frame container with title
         pane->frame_widget = gtk_frame_new(pane->name.c_str());
         gtk_frame_set_label_align(GTK_FRAME(pane->frame_widget), 0.5, 0.5);
 
-        // Create drawing area
+        // Create drawing area. Use a small minimum so the window can be clamped/
+        // resized to fit the screen; the panes expand to fill available space, so
+        // this only affects how small the grid may shrink, not its normal size.
         pane->drawing_area = gtk_drawing_area_new();
-        gtk_widget_set_size_request(pane->drawing_area, pane_width - 10, pane_height - 30);
+        gtk_widget_set_size_request(pane->drawing_area, 160, 90);
         gtk_widget_set_hexpand(pane->drawing_area, TRUE);
         gtk_widget_set_vexpand(pane->drawing_area, TRUE);
         gtk_container_add(GTK_CONTAINER(pane->frame_widget), pane->drawing_area);
@@ -447,6 +482,310 @@ gboolean DashboardDisplay::on_delete_event(GtkWidget* widget, GdkEvent* event, g
     return FALSE;
 }
 
+namespace {
+
+// Shared state for one open stream-info panel. Held by shared_ptr so worker
+// threads and GTK idle callbacks can safely outlive early dialog closure:
+// widgets are only ever touched on the GTK main thread, guarded by `alive`.
+struct StreamInfoState {
+    GtkWidget* dialog = nullptr;
+    GtkWidget* text_view = nullptr;
+    GtkWidget* discover_btn = nullptr;
+    GtkWidget* onvif_btn = nullptr;
+    GtkWidget* spinner = nullptr;
+    std::atomic<bool> alive{true};
+    std::atomic<bool> discovering{false};
+    std::atomic<bool> onvif_running{false};
+
+    int pane_index = -1;
+    bool is_rtsp = false;   // gates the RTSP-only Discover/ONVIF buttons
+    baichuan::DiscoverStreamsCallback discover_fn;
+    baichuan::OnvifStreamsCallback onvif_fn;
+
+    std::mutex mtx;
+    std::string camera_name;
+    std::vector<baichuan::StreamEntry> configured;
+    std::string configured_status = "Probing configured streams...";
+    std::vector<baichuan::StreamEntry> discovered;
+    std::string discovered_status;  // empty until Discover is pressed
+    std::vector<baichuan::StreamEntry> onvif;
+    std::string onvif_status;       // empty until ONVIF is pressed
+};
+
+std::string render_state(StreamInfoState* st) {
+    std::lock_guard<std::mutex> lock(st->mtx);
+    std::string out = "Camera: " + st->camera_name + "\n";
+    out += "==================================================\n\n";
+    out += "CONFIGURED STREAMS\n";
+    if (!st->configured.empty()) {
+        for (auto& e : st->configured) {
+            out += "  " + e.label + "\n";
+            out += "    " + e.url + "\n";
+            out += "    -> " + e.summary + "\n\n";
+        }
+    } else {
+        out += "  " + st->configured_status + "\n\n";
+    }
+    out += "DISCOVERED STREAMS\n";
+    if (!st->discovered_status.empty() || !st->discovered.empty()) {
+        if (!st->discovered.empty()) {
+            for (auto& e : st->discovered) {
+                out += "  " + e.label + "\n";
+                out += "    " + e.url + "\n";
+                out += "    -> " + e.summary + "\n\n";
+            }
+        }
+        if (!st->discovered_status.empty()) {
+            out += "  " + st->discovered_status + "\n";
+        }
+    } else {
+        out += st->is_rtsp ? "  (press \"Discover\" to probe common RTSP paths)\n"
+                           : "  (RTSP cameras only)\n";
+    }
+    out += "\nONVIF (advertised by the camera)\n";
+    if (!st->onvif_status.empty() || !st->onvif.empty()) {
+        for (auto& e : st->onvif) {
+            out += "  " + e.label + "\n";
+            if (!e.url.empty()) out += "    " + e.url + "\n";
+            out += "    -> " + e.summary + "\n\n";
+        }
+        if (!st->onvif_status.empty()) out += "  " + st->onvif_status + "\n";
+    } else {
+        out += st->is_rtsp ? "  (press \"ONVIF\" to query the camera's advertised streams)\n"
+                           : "  (RTSP cameras only)\n";
+    }
+    return out;
+}
+
+// Runs on the GTK main thread. data owns a heap shared_ptr copy.
+gboolean refresh_stream_info(gpointer data) {
+    auto* holder = static_cast<std::shared_ptr<StreamInfoState>*>(data);
+    std::shared_ptr<StreamInfoState> st = *holder;
+    delete holder;
+    if (st->alive.load()) {
+        std::string text = render_state(st.get());
+        GtkTextBuffer* buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(st->text_view));
+        gtk_text_buffer_set_text(buf, text.c_str(), -1);
+        bool disc = st->discovering.load();
+        bool onv = st->onvif_running.load();
+        gtk_widget_set_sensitive(st->discover_btn, st->is_rtsp && !disc);
+        if (st->onvif_btn) gtk_widget_set_sensitive(st->onvif_btn, st->is_rtsp && !onv);
+        bool busy = disc || onv;
+        if (busy) { gtk_widget_show(st->spinner); gtk_spinner_start(GTK_SPINNER(st->spinner)); }
+        else { gtk_spinner_stop(GTK_SPINNER(st->spinner)); gtk_widget_hide(st->spinner); }
+    }
+    return G_SOURCE_REMOVE;
+}
+
+void post_refresh(std::shared_ptr<StreamInfoState> st) {
+    g_idle_add(refresh_stream_info, new std::shared_ptr<StreamInfoState>(std::move(st)));
+}
+
+// "Discover" button: probe common RTSP paths on a worker thread, then refresh.
+void on_discover_clicked(GtkWidget* /*w*/, gpointer data) {
+    // data is a borrowed shared_ptr* owned by the dialog (set via set_data_full).
+    auto st = *static_cast<std::shared_ptr<StreamInfoState>*>(data);
+    if (st->discovering.exchange(true)) return;   // already running
+    if (!st->discover_fn) {
+        std::lock_guard<std::mutex> lock(st->mtx);
+        st->discovered_status = "Discovery not available for this camera.";
+        st->discovering.store(false);
+        post_refresh(st);
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(st->mtx);
+        st->discovered.clear();
+        st->discovered_status = "Discovering (probing common paths)...";
+    }
+    post_refresh(st);
+
+    auto fn = st->discover_fn;
+    int idx = st->pane_index;
+    std::thread([st, fn, idx]() {
+        std::vector<baichuan::StreamEntry> found = fn(idx);
+        {
+            std::lock_guard<std::mutex> lock(st->mtx);
+            st->discovered = std::move(found);
+            st->discovered_status = st->discovered.empty()
+                ? "No additional streams found."
+                : "";
+        }
+        st->discovering.store(false);
+        post_refresh(st);
+    }).detach();
+}
+
+// "ONVIF" button: query the camera's advertised streams on a worker thread.
+void on_onvif_clicked(GtkWidget* /*w*/, gpointer data) {
+    auto st = *static_cast<std::shared_ptr<StreamInfoState>*>(data);
+    if (st->onvif_running.exchange(true)) return;
+    if (!st->onvif_fn) {
+        std::lock_guard<std::mutex> lock(st->mtx);
+        st->onvif_status = "ONVIF not available for this camera.";
+        st->onvif_running.store(false);
+        post_refresh(st);
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(st->mtx);
+        st->onvif.clear();
+        st->onvif_status = "Querying ONVIF...";
+    }
+    post_refresh(st);
+
+    auto fn = st->onvif_fn;
+    int idx = st->pane_index;
+    std::thread([st, fn, idx]() {
+        std::vector<baichuan::StreamEntry> found = fn(idx);
+        {
+            std::lock_guard<std::mutex> lock(st->mtx);
+            st->onvif = std::move(found);
+            st->onvif_status = st->onvif.empty() ? "No ONVIF streams returned." : "";
+        }
+        st->onvif_running.store(false);
+        post_refresh(st);
+    }).detach();
+}
+
+} // namespace
+
+void DashboardDisplay::show_stream_info(int pane_index) {
+    if (pane_index < 0 || static_cast<size_t>(pane_index) >= panes_.size()) return;
+
+    auto st = std::make_shared<StreamInfoState>();
+    st->pane_index = pane_index;
+    st->discover_fn = discover_streams_callback_;
+    st->onvif_fn = onvif_streams_callback_;
+    st->camera_name = panes_[pane_index]->name;
+    const bool is_rtsp = panes_[pane_index]->type == CameraType::Rtsp;
+    st->is_rtsp = is_rtsp;
+
+    GtkWidget* dialog = gtk_dialog_new_with_buttons(
+        "Streams", GTK_WINDOW(window_),
+        static_cast<GtkDialogFlags>(GTK_DIALOG_DESTROY_WITH_PARENT),
+        "_Close", GTK_RESPONSE_CLOSE, nullptr);
+    gtk_window_set_default_size(GTK_WINDOW(dialog), 620, 460);
+    st->dialog = dialog;
+
+    GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+
+    // Action row: Discover button + spinner.
+    GtkWidget* action_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    st->discover_btn = gtk_button_new_with_label("Discover");
+    gtk_widget_set_tooltip_text(st->discover_btn, "Probe common RTSP paths for streams");
+    gtk_box_pack_start(GTK_BOX(action_row), st->discover_btn, FALSE, FALSE, 4);
+    st->onvif_btn = gtk_button_new_with_label("ONVIF");
+    gtk_widget_set_tooltip_text(st->onvif_btn, "Query the camera's advertised streams via ONVIF");
+    gtk_box_pack_start(GTK_BOX(action_row), st->onvif_btn, FALSE, FALSE, 4);
+    st->spinner = gtk_spinner_new();
+    gtk_box_pack_start(GTK_BOX(action_row), st->spinner, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(content), action_row, FALSE, FALSE, 4);
+
+    // Discovery (RTSP path probing) and ONVIF only make sense for RTSP cameras;
+    // for baichuan/mjpeg the panel just lists the configured/available feeds.
+    gtk_widget_set_sensitive(st->discover_btn, is_rtsp);
+    gtk_widget_set_sensitive(st->onvif_btn, is_rtsp);
+
+    GtkWidget* scrolled = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled),
+                                   GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_hexpand(scrolled, TRUE);
+    gtk_widget_set_vexpand(scrolled, TRUE);
+    st->text_view = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(st->text_view), FALSE);
+    gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(st->text_view), FALSE);
+    gtk_text_view_set_monospace(GTK_TEXT_VIEW(st->text_view), TRUE);
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(st->text_view), GTK_WRAP_WORD_CHAR);
+    gtk_text_view_set_left_margin(GTK_TEXT_VIEW(st->text_view), 10);
+    gtk_text_view_set_top_margin(GTK_TEXT_VIEW(st->text_view), 8);
+    gtk_container_add(GTK_CONTAINER(scrolled), st->text_view);
+    gtk_box_pack_start(GTK_BOX(content), scrolled, TRUE, TRUE, 0);
+
+    // The dialog owns one reference to the shared state; its deleter runs on
+    // destroy. Worker threads hold their own references and check `alive`.
+    auto* dialog_ref = new std::shared_ptr<StreamInfoState>(st);
+    g_object_set_data_full(G_OBJECT(dialog), "stream-state", dialog_ref,
+        [](gpointer p) {
+            auto* ref = static_cast<std::shared_ptr<StreamInfoState>*>(p);
+            (*ref)->alive.store(false);   // stop pending idle callbacks touching widgets
+            delete ref;
+        });
+
+    g_signal_connect(st->discover_btn, "clicked",
+                     G_CALLBACK(on_discover_clicked), dialog_ref);
+    g_signal_connect(st->onvif_btn, "clicked",
+                     G_CALLBACK(on_onvif_clicked), dialog_ref);
+    g_signal_connect(dialog, "response",
+                     G_CALLBACK(gtk_widget_destroy), nullptr);
+
+    gtk_widget_show_all(dialog);
+    gtk_widget_hide(st->spinner);   // shown only while discovering
+
+    // Render the initial "probing..." placeholder immediately.
+    post_refresh(st);
+
+    // Introspect the configured streams on a worker thread.
+    if (probe_streams_callback_) {
+        auto fn = probe_streams_callback_;
+        int idx = pane_index;
+        std::thread([st, fn, idx]() {
+            std::vector<StreamEntry> cfg = fn(idx);
+            {
+                std::lock_guard<std::mutex> lock(st->mtx);
+                st->configured = std::move(cfg);
+                if (st->configured.empty())
+                    st->configured_status = "No configured streams to probe.";
+            }
+            post_refresh(st);
+        }).detach();
+    } else {
+        std::lock_guard<std::mutex> lock(st->mtx);
+        st->configured_status = "Introspection not available.";
+        post_refresh(st);
+    }
+}
+
+void DashboardDisplay::on_help_clicked(GtkWidget* widget, gpointer user_data) {
+    (void)widget;
+    DashboardDisplay* self = static_cast<DashboardDisplay*>(user_data);
+
+    GtkWidget* dialog = gtk_dialog_new_with_buttons(
+        "Help", GTK_WINDOW(self->window_),
+        static_cast<GtkDialogFlags>(GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT),
+        "_Close", GTK_RESPONSE_CLOSE, nullptr);
+    gtk_window_set_default_size(GTK_WINDOW(dialog), 640, 560);
+
+    // Monospace, read-only, scrollable view of the help text.
+    GtkWidget* scrolled = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled),
+                                   GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_hexpand(scrolled, TRUE);
+    gtk_widget_set_vexpand(scrolled, TRUE);
+
+    GtkWidget* text_view = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(text_view), FALSE);
+    gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(text_view), FALSE);
+    gtk_text_view_set_monospace(GTK_TEXT_VIEW(text_view), TRUE);
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(text_view), GTK_WRAP_NONE);
+    gtk_text_view_set_left_margin(GTK_TEXT_VIEW(text_view), 10);
+    gtk_text_view_set_right_margin(GTK_TEXT_VIEW(text_view), 10);
+    gtk_text_view_set_top_margin(GTK_TEXT_VIEW(text_view), 8);
+
+    GtkTextBuffer* buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(text_view));
+    const std::string& text = self->help_text_.empty()
+        ? std::string("No help text available.") : self->help_text_;
+    gtk_text_buffer_set_text(buffer, text.c_str(), -1);
+
+    gtk_container_add(GTK_CONTAINER(scrolled), text_view);
+    GtkWidget* content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+    gtk_box_pack_start(GTK_BOX(content), scrolled, TRUE, TRUE, 0);
+
+    gtk_widget_show_all(dialog);
+    gtk_dialog_run(GTK_DIALOG(dialog));   // nested loop; idle video updates keep running
+    gtk_widget_destroy(dialog);
+}
+
 void DashboardDisplay::on_quit_clicked(GtkWidget* widget, gpointer user_data) {
     (void)widget;
 
@@ -537,6 +876,14 @@ gboolean DashboardDisplay::on_key_press(GtkWidget* widget, GdkEventKey* event, g
     if (kv == GDK_KEY_r || kv == GDK_KEY_R) {
         if (self->resolution_callback_) {
             self->resolution_callback_(self->focused_pane_);
+        }
+        return TRUE;
+    }
+
+    // I -> show the stream-info panel for the focused camera (no-op in overview)
+    if (kv == GDK_KEY_i || kv == GDK_KEY_I) {
+        if (self->focused_pane_ >= 0) {
+            self->show_stream_info(self->focused_pane_);
         }
         return TRUE;
     }

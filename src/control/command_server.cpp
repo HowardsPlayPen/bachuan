@@ -1,14 +1,7 @@
 #include "control/command_server.h"
 #include "utils/logger.h"
+#include "utils/net_compat.h"
 
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
-#include <poll.h>
-#include <fcntl.h>
-#include <cerrno>
 #include <cstring>
 
 namespace baichuan {
@@ -25,51 +18,55 @@ void CommandServer::set_handler(CommandHandler handler) {
     handler_ = std::move(handler);
 }
 
-int CommandServer::create_unix_socket(const std::string& path) {
+#ifndef _WIN32
+// Unix-domain control socket is POSIX-only. On Windows the control interface is
+// TCP-only (see start()).
+net::socket_t CommandServer::create_unix_socket(const std::string& path) {
     // Remove stale socket file
     unlink(path.c_str());
 
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) {
-        LOG_ERROR("CommandServer: Failed to create Unix socket: {}", strerror(errno));
-        return -1;
+    net::socket_t fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd == net::kInvalidSocket) {
+        LOG_ERROR("CommandServer: Failed to create Unix socket: {}", net::error_string(net::last_error()));
+        return net::kInvalidSocket;
     }
 
     struct sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
     if (path.size() >= sizeof(addr.sun_path)) {
         LOG_ERROR("CommandServer: Unix socket path too long: {}", path);
-        close(fd);
-        return -1;
+        net::close_socket(fd);
+        return net::kInvalidSocket;
     }
     strncpy(addr.sun_path, path.c_str(), sizeof(addr.sun_path) - 1);
 
     if (bind(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
-        LOG_ERROR("CommandServer: Failed to bind Unix socket {}: {}", path, strerror(errno));
-        close(fd);
-        return -1;
+        LOG_ERROR("CommandServer: Failed to bind Unix socket {}: {}", path, net::error_string(net::last_error()));
+        net::close_socket(fd);
+        return net::kInvalidSocket;
     }
 
     if (listen(fd, 5) < 0) {
-        LOG_ERROR("CommandServer: Failed to listen on Unix socket: {}", strerror(errno));
-        close(fd);
+        LOG_ERROR("CommandServer: Failed to listen on Unix socket: {}", net::error_string(net::last_error()));
+        net::close_socket(fd);
         unlink(path.c_str());
-        return -1;
+        return net::kInvalidSocket;
     }
 
     LOG_INFO("CommandServer: Listening on Unix socket {}", path);
     return fd;
 }
+#endif  // !_WIN32
 
-int CommandServer::create_tcp_socket(int port) {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        LOG_ERROR("CommandServer: Failed to create TCP socket: {}", strerror(errno));
-        return -1;
+net::socket_t CommandServer::create_tcp_socket(int port) {
+    net::socket_t fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd == net::kInvalidSocket) {
+        LOG_ERROR("CommandServer: Failed to create TCP socket: {}", net::error_string(net::last_error()));
+        return net::kInvalidSocket;
     }
 
     int opt = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&opt), sizeof(opt));
 
     struct sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -77,15 +74,15 @@ int CommandServer::create_tcp_socket(int port) {
     addr.sin_port = htons(static_cast<uint16_t>(port));
 
     if (bind(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
-        LOG_ERROR("CommandServer: Failed to bind TCP port {}: {}", port, strerror(errno));
-        close(fd);
-        return -1;
+        LOG_ERROR("CommandServer: Failed to bind TCP port {}: {}", port, net::error_string(net::last_error()));
+        net::close_socket(fd);
+        return net::kInvalidSocket;
     }
 
     if (listen(fd, 5) < 0) {
-        LOG_ERROR("CommandServer: Failed to listen on TCP port {}: {}", port, strerror(errno));
-        close(fd);
-        return -1;
+        LOG_ERROR("CommandServer: Failed to listen on TCP port {}: {}", port, net::error_string(net::last_error()));
+        net::close_socket(fd);
+        return net::kInvalidSocket;
     }
 
     LOG_INFO("CommandServer: Listening on TCP port {}", port);
@@ -98,24 +95,32 @@ bool CommandServer::start() {
         return true;
     }
 
-    // Create self-pipe for shutdown signaling
-    if (pipe(quit_pipe_) < 0) {
-        LOG_ERROR("CommandServer: Failed to create quit pipe: {}", strerror(errno));
+    // Create a connected socket pair used to wake the listener out of poll() on
+    // shutdown (portable replacement for the POSIX self-pipe trick).
+    if (net::make_socketpair(quit_pipe_) < 0) {
+        LOG_ERROR("CommandServer: Failed to create quit socketpair: {}", net::error_string(net::last_error()));
         return false;
     }
-    // Make read end non-blocking
-    fcntl(quit_pipe_[0], F_SETFL, O_NONBLOCK);
+    net::set_nonblocking(quit_pipe_[0], true);
 
+#ifndef _WIN32
     if (!unix_path_.empty()) {
         unix_fd_ = create_unix_socket(unix_path_);
-        if (unix_fd_ < 0) return false;
+        if (unix_fd_ == net::kInvalidSocket) return false;
     }
+#else
+    if (!unix_path_.empty()) {
+        LOG_WARN("CommandServer: Unix control socket not supported on Windows; use tcp_port instead");
+    }
+#endif
 
     if (tcp_port_ > 0) {
         tcp_fd_ = create_tcp_socket(tcp_port_);
-        if (tcp_fd_ < 0) {
-            if (unix_fd_ >= 0) { close(unix_fd_); unix_fd_ = -1; }
+        if (tcp_fd_ == net::kInvalidSocket) {
+#ifndef _WIN32
+            if (unix_fd_ != net::kInvalidSocket) { net::close_socket(unix_fd_); unix_fd_ = net::kInvalidSocket; }
             if (!unix_path_.empty()) unlink(unix_path_.c_str());
+#endif
             return false;
         }
     }
@@ -131,25 +136,26 @@ void CommandServer::stop() {
 
     running_.store(false);
 
-    // Signal the listener to wake up via quit pipe
-    if (quit_pipe_[1] >= 0) {
+    // Signal the listener to wake up via the quit socket
+    if (quit_pipe_[1] != net::kInvalidSocket) {
         char c = 'q';
-        ssize_t ret = write(quit_pipe_[1], &c, 1);
-        (void)ret;
+        send(quit_pipe_[1], &c, 1, 0);
     }
 
     if (listener_thread_.joinable()) {
         listener_thread_.join();
     }
 
-    if (unix_fd_ >= 0) { close(unix_fd_); unix_fd_ = -1; }
-    if (tcp_fd_ >= 0) { close(tcp_fd_); tcp_fd_ = -1; }
-    if (quit_pipe_[0] >= 0) { close(quit_pipe_[0]); quit_pipe_[0] = -1; }
-    if (quit_pipe_[1] >= 0) { close(quit_pipe_[1]); quit_pipe_[1] = -1; }
+    if (unix_fd_ != net::kInvalidSocket)    { net::close_socket(unix_fd_); unix_fd_ = net::kInvalidSocket; }
+    if (tcp_fd_ != net::kInvalidSocket)     { net::close_socket(tcp_fd_); tcp_fd_ = net::kInvalidSocket; }
+    if (quit_pipe_[0] != net::kInvalidSocket){ net::close_socket(quit_pipe_[0]); quit_pipe_[0] = net::kInvalidSocket; }
+    if (quit_pipe_[1] != net::kInvalidSocket){ net::close_socket(quit_pipe_[1]); quit_pipe_[1] = net::kInvalidSocket; }
 
+#ifndef _WIN32
     if (!unix_path_.empty()) {
         unlink(unix_path_.c_str());
     }
+#endif
 
     LOG_INFO("CommandServer: Stopped");
 }
@@ -157,50 +163,49 @@ void CommandServer::stop() {
 void CommandServer::listener_loop() {
     LOG_DEBUG("CommandServer: Listener thread started");
 
-    // Build poll fd set: quit_pipe + unix + tcp
-    std::vector<struct pollfd> fds;
+    // Build poll fd set: quit socket + unix + tcp
+    std::vector<net::pollfd_t> fds;
 
-    // Always include quit pipe as first entry
+    // Always include the quit socket as the first entry
     fds.push_back({quit_pipe_[0], POLLIN, 0});
 
     int unix_poll_idx = -1;
-    if (unix_fd_ >= 0) {
+    if (unix_fd_ != net::kInvalidSocket) {
         unix_poll_idx = static_cast<int>(fds.size());
         fds.push_back({unix_fd_, POLLIN, 0});
     }
 
     int tcp_poll_idx = -1;
-    if (tcp_fd_ >= 0) {
+    if (tcp_fd_ != net::kInvalidSocket) {
         tcp_poll_idx = static_cast<int>(fds.size());
         fds.push_back({tcp_fd_, POLLIN, 0});
     }
 
     while (running_.load()) {
-        int ret = poll(fds.data(), fds.size(), 1000);  // 1s timeout
+        int ret = net::poll_sockets(fds.data(), fds.size(), 1000);  // 1s timeout
         if (ret < 0) {
-            if (errno == EINTR) continue;
-            LOG_ERROR("CommandServer: poll error: {}", strerror(errno));
+            LOG_ERROR("CommandServer: poll error: {}", net::error_string(net::last_error()));
             break;
         }
         if (ret == 0) continue;  // timeout
 
-        // Check quit pipe
+        // Check quit socket
         if (fds[0].revents & POLLIN) {
             break;
         }
 
         // Check unix socket
         if (unix_poll_idx >= 0 && (fds[unix_poll_idx].revents & POLLIN)) {
-            int client = accept(unix_fd_, nullptr, nullptr);
-            if (client >= 0) {
+            net::socket_t client = accept(unix_fd_, nullptr, nullptr);
+            if (client != net::kInvalidSocket) {
                 handle_connection(client);
             }
         }
 
         // Check TCP socket
         if (tcp_poll_idx >= 0 && (fds[tcp_poll_idx].revents & POLLIN)) {
-            int client = accept(tcp_fd_, nullptr, nullptr);
-            if (client >= 0) {
+            net::socket_t client = accept(tcp_fd_, nullptr, nullptr);
+            if (client != net::kInvalidSocket) {
                 handle_connection(client);
             }
         }
@@ -209,12 +214,9 @@ void CommandServer::listener_loop() {
     LOG_DEBUG("CommandServer: Listener thread exiting");
 }
 
-void CommandServer::handle_connection(int client_fd) {
+void CommandServer::handle_connection(net::socket_t client_fd) {
     // Set a read timeout so we don't block forever
-    struct timeval tv;
-    tv.tv_sec = 5;
-    tv.tv_usec = 0;
-    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    net::set_recv_timeout(client_fd, 5000);
 
     // Read until newline or EOF (max 4KB)
     std::string request;
@@ -222,10 +224,10 @@ void CommandServer::handle_connection(int client_fd) {
     bool got_newline = false;
 
     while (request.size() < 4096) {
-        ssize_t n = read(client_fd, buf, sizeof(buf));
+        int n = recv(client_fd, buf, sizeof(buf), 0);
         if (n <= 0) break;
 
-        for (ssize_t i = 0; i < n; i++) {
+        for (int i = 0; i < n; i++) {
             if (buf[i] == '\n') {
                 got_newline = true;
                 break;
@@ -241,7 +243,7 @@ void CommandServer::handle_connection(int client_fd) {
     }
 
     if (request.empty()) {
-        close(client_fd);
+        net::close_socket(client_fd);
         return;
     }
 
@@ -255,10 +257,9 @@ void CommandServer::handle_connection(int client_fd) {
     }
 
     response += "\n";
-    ssize_t ret = write(client_fd, response.c_str(), response.size());
-    (void)ret;
+    send(client_fd, response.c_str(), static_cast<int>(response.size()), 0);
 
-    close(client_fd);
+    net::close_socket(client_fd);
 }
 
 } // namespace baichuan

@@ -229,6 +229,26 @@ the `HELP_URL` CMake variable (default: this repository):
 cmake -DHELP_URL="https://example.com/my-docs" ..
 ```
 
+### Building on Windows
+
+Windows is supported via the [MSYS2](https://www.msys2.org/) **UCRT64** toolchain
+(GCC + CMake) — no Visual Studio required. **See [BUILD.md](BUILD.md)** for the
+full walkthrough: installing MSYS2, the exact `pacman` dependency list, building,
+running, and producing a standalone bundle (`scripts/bundle_windows.sh`) that
+runs on a clean Windows PC with nothing installed.
+
+Quick version, from the **MSYS2 UCRT64** shell:
+
+```bash
+cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+./build/dashboard.exe -c config.json
+```
+
+Windows differences: the control interface is TCP-only (the Unix-domain socket is
+POSIX-only), and the default config location is `%APPDATA%\baichuan\config.json`.
+TCP control works as on Linux, e.g. `echo '{"list": true}' | nc <host> 9100`.
+
 ## Dependencies
 
 - OpenSSL - AES encryption

@@ -1,15 +1,8 @@
 #include "mjpeg/mjpeg_source.h"
 #include "utils/logger.h"
+#include "utils/net_compat.h"
 
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <poll.h>
 #include <cstring>
-#include <algorithm>
 #include <sstream>
 
 #include <jpeglib.h>
@@ -56,17 +49,14 @@ bool MjpegSource::connect() {
 
     // Create socket
     socket_fd_ = socket(AF_INET, SOCK_STREAM, 0);
-    if (socket_fd_ < 0) {
+    if (socket_fd_ == net::kInvalidSocket) {
         LOG_ERROR("Failed to create socket");
         return false;
     }
 
-    // Set socket timeout
-    struct timeval tv;
-    tv.tv_sec = timeout_seconds_;
-    tv.tv_usec = 0;
-    setsockopt(socket_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(socket_fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    // Set socket timeout (net:: helpers handle the DWORD-ms vs timeval difference)
+    net::set_recv_timeout(socket_fd_, timeout_seconds_ * 1000);
+    net::set_send_timeout(socket_fd_, timeout_seconds_ * 1000);
 
     // Connect
     struct sockaddr_in server_addr{};
@@ -122,8 +112,8 @@ void MjpegSource::stop() {
     running_.store(false);
 
     // Close socket to unblock any reads
-    if (socket_fd_ >= 0) {
-        shutdown(socket_fd_, SHUT_RDWR);
+    if (socket_fd_ != net::kInvalidSocket) {
+        net::shutdown_both(socket_fd_);
     }
 
     if (receive_thread_.joinable()) {
@@ -234,9 +224,9 @@ bool MjpegSource::send_http_request() {
             << "\r\n";
 
     std::string req_str = request.str();
-    ssize_t sent = send(socket_fd_, req_str.c_str(), req_str.length(), 0);
+    int sent = send(socket_fd_, req_str.c_str(), static_cast<int>(req_str.length()), 0);
 
-    return sent == static_cast<ssize_t>(req_str.length());
+    return sent == static_cast<int>(req_str.length());
 }
 
 std::string MjpegSource::read_line() {
@@ -311,7 +301,8 @@ bool MjpegSource::read_bytes(std::vector<uint8_t>& buffer, size_t count) {
     size_t total_read = 0;
 
     while (total_read < count && running_.load()) {
-        ssize_t n = recv(socket_fd_, buffer.data() + total_read, count - total_read, 0);
+        int n = recv(socket_fd_, reinterpret_cast<char*>(buffer.data()) + total_read,
+                     static_cast<int>(count - total_read), 0);
         if (n <= 0) {
             return false;
         }
@@ -392,7 +383,7 @@ bool MjpegSource::read_jpeg_frame(std::vector<uint8_t>& jpeg_data, size_t conten
     bool found_soi = false;
 
     while (running_.load()) {
-        if (recv(socket_fd_, &curr_byte, 1, 0) != 1) {
+        if (recv(socket_fd_, reinterpret_cast<char*>(&curr_byte), 1, 0) != 1) {
             return false;
         }
 
@@ -544,9 +535,9 @@ void MjpegSource::receive_loop() {
 }
 
 void MjpegSource::cleanup() {
-    if (socket_fd_ >= 0) {
-        close(socket_fd_);
-        socket_fd_ = -1;
+    if (socket_fd_ != net::kInvalidSocket) {
+        net::close_socket(socket_fd_);
+        socket_fd_ = net::kInvalidSocket;
     }
     boundary_.clear();
     auth_header_.clear();

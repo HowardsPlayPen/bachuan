@@ -22,10 +22,27 @@ using QuitCallback = std::function<void()>;
 // (meaning: apply to all cameras).
 using ToggleResolutionCallback = std::function<void(int focused_index)>;
 
+// One row in the per-camera stream-info panel (opened with 'i' on a focused pane).
+struct StreamEntry {
+    std::string label;    // e.g. "main (configured)", "/Streaming/Channels/101"
+    std::string url;      // full stream URL
+    std::string summary;  // e.g. "hevc 1920x1080 @15fps + aac", or an error note
+};
+
+// Characterize a pane's *configured* streams (main/sub). Runs on a worker thread.
+using ProbeStreamsCallback = std::function<std::vector<StreamEntry>(int pane_index)>;
+// Actively *discover* additional streams for a pane's camera (probes common
+// RTSP paths). Runs on a worker thread.
+using DiscoverStreamsCallback = std::function<std::vector<StreamEntry>(int pane_index)>;
+// Discover streams via ONVIF for a pane's camera. Runs on a worker thread.
+// Returns entries; on failure a single entry whose summary carries the reason.
+using OnvifStreamsCallback = std::function<std::vector<StreamEntry>(int pane_index)>;
+
 // Single camera pane within the dashboard
 struct CameraPane {
     std::string name;
     std::string status;
+    CameraType type = CameraType::Baichuan;  // source type (gates the Streams panel actions)
 
     // Video frame data
     std::vector<uint8_t> frame_buffer;
@@ -76,6 +93,9 @@ public:
     // Set quit callback
     void on_quit(QuitCallback cb) { quit_callback_ = std::move(cb); }
 
+    // Set the text shown by the in-app Help dialog (typically the --help output).
+    void set_help_text(const std::string& text) { help_text_ = text; }
+
     // Configure the modifier key required for keyboard hotkeys.
     // Accepts "", "none", "ctrl"/"control", "alt", "shift", "super"/"win".
     // Unknown values fall back to no modifier.
@@ -83,6 +103,11 @@ public:
 
     // Set the callback invoked when the resolution-toggle hotkey is pressed.
     void on_toggle_resolution(ToggleResolutionCallback cb) { resolution_callback_ = std::move(cb); }
+
+    // Set the callbacks backing the per-camera stream-info panel.
+    void on_probe_streams(ProbeStreamsCallback cb) { probe_streams_callback_ = std::move(cb); }
+    void on_discover_streams(DiscoverStreamsCallback cb) { discover_streams_callback_ = std::move(cb); }
+    void on_onvif_streams(OnvifStreamsCallback cb) { onvif_streams_callback_ = std::move(cb); }
 
     // Focus a single camera pane (hides the others). index must be < pane_count().
     void focus_pane(size_t index);
@@ -134,16 +159,24 @@ private:
 
     std::atomic<bool> quit_requested_{false};
     QuitCallback quit_callback_;
+    std::string help_text_;   // shown by the Help dialog
 
     // Keyboard hotkey state
     guint hotkey_modifier_mask_ = 0;   // required modifier mask (0 = none)
     int focused_pane_ = -1;            // currently focused pane, -1 = overview
     ToggleResolutionCallback resolution_callback_;
+    ProbeStreamsCallback probe_streams_callback_;
+    DiscoverStreamsCallback discover_streams_callback_;
+    OnvifStreamsCallback onvif_streams_callback_;
+
+    // Open the stream-info panel for a focused pane (triggered by the 'i' key).
+    void show_stream_info(int pane_index);
 
     // GTK callbacks
     static gboolean on_draw(GtkWidget* widget, cairo_t* cr, gpointer user_data);
     static gboolean on_delete_event(GtkWidget* widget, GdkEvent* event, gpointer user_data);
     static void on_quit_clicked(GtkWidget* widget, gpointer user_data);
+    static void on_help_clicked(GtkWidget* widget, gpointer user_data);
     static gboolean on_idle_update(gpointer user_data);
     static gboolean on_key_press(GtkWidget* widget, GdkEventKey* event, gpointer user_data);
 

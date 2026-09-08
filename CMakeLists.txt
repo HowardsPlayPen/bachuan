@@ -13,6 +13,17 @@ set(HELP_URL "https://github.com/HowardsPlayPen/bachuan"
 # Find required packages
 find_package(PkgConfig REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(Threads REQUIRED)
+
+# Platform-specific networking libraries and defines.
+# On Windows: Winsock2 (ws2_32); WIN32_LEAN_AND_MEAN avoids the winsock.h vs
+# winsock2.h clash when GTK pulls in <windows.h>; _WIN32_WINNT=0x0A00 (Win10)
+# is required for WSAPoll.
+set(PLATFORM_NET_LIBS "")
+if(WIN32)
+    set(PLATFORM_NET_LIBS ws2_32)
+    add_compile_definitions(WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+endif()
 
 pkg_check_modules(LIBXML2 REQUIRED libxml-2.0)
 pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
@@ -52,6 +63,8 @@ set(DASHBOARD_VIDEO_SOURCES
 set(UTILS_SOURCES
     src/utils/logger.cpp
     src/utils/md5.cpp
+    src/utils/net_compat.cpp
+    src/utils/onvif.cpp
 )
 
 # Common sources (shared between baichuan and dashboard)
@@ -93,7 +106,8 @@ target_link_libraries(baichuan PRIVATE
     ${GTK3_LIBRARIES}
     ${FFMPEG_LIBRARIES}
     ${LIBJPEG_LIBRARIES}
-    pthread
+    Threads::Threads
+    ${PLATFORM_NET_LIBS}
 )
 
 target_compile_options(baichuan PRIVATE
@@ -121,7 +135,8 @@ target_link_libraries(dashboard PRIVATE
     ${GTK3_LIBRARIES}
     ${FFMPEG_LIBRARIES}
     ${LIBJPEG_LIBRARIES}
-    pthread
+    Threads::Threads
+    ${PLATFORM_NET_LIBS}
 )
 
 target_compile_definitions(dashboard PRIVATE HELP_URL="${HELP_URL}")

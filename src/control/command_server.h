@@ -1,5 +1,6 @@
 #pragma once
 
+#include "utils/net_compat.h"
 #include <string>
 #include <functional>
 #include <thread>
@@ -31,9 +32,11 @@ private:
     std::string unix_path_;
     int tcp_port_ = 0;
 
-    int unix_fd_ = -1;
-    int tcp_fd_ = -1;
-    int quit_pipe_[2] = {-1, -1};  // self-pipe for clean shutdown
+    net::socket_t unix_fd_ = net::kInvalidSocket;
+    net::socket_t tcp_fd_ = net::kInvalidSocket;
+    // Shutdown-wakeup channel (connected socket pair). [1] is written by stop(),
+    // [0] is watched by the listener loop.
+    net::socket_t quit_pipe_[2] = {net::kInvalidSocket, net::kInvalidSocket};
 
     std::thread listener_thread_;
     std::atomic<bool> running_{false};
@@ -41,9 +44,11 @@ private:
     CommandHandler handler_;
 
     void listener_loop();
-    void handle_connection(int client_fd);
-    int create_unix_socket(const std::string& path);
-    int create_tcp_socket(int port);
+    void handle_connection(net::socket_t client_fd);
+#ifndef _WIN32
+    net::socket_t create_unix_socket(const std::string& path);
+#endif
+    net::socket_t create_tcp_socket(int port);
 };
 
 } // namespace baichuan

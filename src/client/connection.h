@@ -2,6 +2,7 @@
 
 #include "protocol/bc_header.h"
 #include "protocol/bc_crypto.h"
+#include "utils/net_compat.h"
 #include <string>
 #include <vector>
 #include <memory>
@@ -26,7 +27,7 @@ public:
     void disconnect();
 
     // Check if connected
-    bool is_connected() const { return socket_fd_ >= 0; }
+    bool is_connected() const { return socket_fd_ != net::kInvalidSocket; }
 
     // Send a message (handles encryption if needed)
     bool send_message(const BcMessage& msg);
@@ -57,7 +58,7 @@ public:
     void set_message_callback(MessageCallback cb) { message_callback_ = std::move(cb); }
 
 private:
-    int socket_fd_ = -1;
+    net::socket_t socket_fd_ = net::kInvalidSocket;
     std::string host_;
     uint16_t port_ = 9000;
 

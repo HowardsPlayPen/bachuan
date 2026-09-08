@@ -7,6 +7,7 @@
 #include "rtsp/rtsp_source.h"
 #include "mjpeg/mjpeg_source.h"
 #include "utils/logger.h"
+#include "utils/net_compat.h"
 
 #include <iostream>
 #include <string>
@@ -88,6 +89,13 @@ enum class CaptureMode {
 };
 
 int main(int argc, char* argv[]) {
+    // Initialize the socket subsystem (WSAStartup on Windows; no-op on POSIX).
+    net::Init net_guard;
+    if (!net_guard.ok) {
+        std::cerr << "Error: failed to initialize networking\n";
+        return 1;
+    }
+
     // Default configuration - Baichuan
     std::string host = "10.0.1.10";
     uint16_t port = 9000;
